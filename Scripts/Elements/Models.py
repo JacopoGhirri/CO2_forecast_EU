@@ -8,7 +8,15 @@ class residual_block(nn.Module):
     Main building block for models.
     """
 
-    def __init__(self, width, dim_block, activation, normalization, dropout=0):
+    def __init__(self, width, dim_block, activation, normalization, dropout=0.0):
+        """
+        Args:
+            width: number of neurons in each layer
+            dim_block: number of hidden layers in the block
+            activation: activation function
+            normalization: type of normalization layer, placed only once in the block after the first linear layer
+            dropout: numeric value between 0 and 1
+        """
         super(residual_block, self).__init__()
         layers = []
         for i in range(dim_block - 1):
@@ -30,11 +38,14 @@ class residual_block(nn.Module):
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
-        # learn a residual connection
+        # learns a residual connection
         return x + self.layers(x)
 
 
 def get_activation(activation):
+    """
+    Utility function to get activation torch module from string.
+    """
     if activation == "relu":
         return nn.ReLU()
     elif activation == "gelu":
@@ -56,13 +67,18 @@ def get_activation(activation):
 
 
 def reparameterization(mean, var):
+    """
+    Utlity function for implementing reparameterization trick.
+    """
     epsilon = torch.randn_like(var)
     z = mean + var * epsilon
     return z
 
 
 class Encoder(nn.Module):
-
+    """
+    Encoder model, to obtain latent representation from input variables.
+    """
     def __init__(
         self,
         input_dim,
@@ -71,9 +87,20 @@ class Encoder(nn.Module):
         dim_blocks,
         activation,
         normalization="batch",
-        dropouts=0,
-        input_dropout=0,
+        dropouts=0.0,
+        input_dropout=0.0,
     ):
+        """
+        Args:
+            input_dim: number of input variables
+            latent_dim: dimensionality of latent representation
+            num_blocks: number of residual blocks
+            dim_blocks: number of hidden layers in each residual block
+            activation: string name of activation function
+            normalization: string name of normalization layer
+            dropouts: dropout value inside the network, numeric value between 0 and 1
+            input_dropout: dropout value applied directly on inputs, numeric value between 0 and 1
+        """
         super(Encoder, self).__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -84,6 +111,7 @@ class Encoder(nn.Module):
         self.dropouts = dropouts
         self.input_dropout = input_dropout
 
+        #width of residual blocks linearly decreasing from input size to latent representation
         pass_sizes = list(
             self.input_dim
             - np.arange(0, self.num_blocks)
@@ -92,7 +120,9 @@ class Encoder(nn.Module):
         pass_sizes.append(self.latent_dim)
 
         blocks = []
+        #apply input dropout first
         blocks.append(nn.Dropout(self.input_dropout))
+        #append individual residual blocks
         for i in range(0, len(pass_sizes) - 1):
             s_in = pass_sizes[i]
             s_out = pass_sizes[i + 1]
@@ -108,6 +138,7 @@ class Encoder(nn.Module):
             )
 
         self.net = nn.Sequential(*blocks)
+        #separate output layers for mean and log variance
         self.mean = nn.Linear(latent_dim, latent_dim)
         self.log_var = nn.Linear(latent_dim, latent_dim)
 
@@ -120,7 +151,9 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-
+    """
+    Decoder model, to obtain reconstructed input variables from latent representation.
+    """
     def __init__(
         self,
         input_dim,
@@ -131,6 +164,16 @@ class Decoder(nn.Module):
         normalization="batch",
         dropouts=0,
     ):
+        """
+        Args:
+            input_dim: number of input variables
+            latent_dim: dimensionality of latent representation
+            num_blocks: number of residual blocks
+            dim_blocks: number of hidden layers in each residual block
+            activation: string name of activation function
+            normalization: string name of normalization layer
+            dropouts: dropout value inside the network, numeric value between 0 and 1
+        """
         super(Decoder, self).__init__()
 
         self.input_dim = input_dim
@@ -141,6 +184,7 @@ class Decoder(nn.Module):
         self.normalization = normalization
         self.dropouts = dropouts
 
+        #residual block structure replicates the behaviour of encoder network, but reverses the order.
         pass_sizes = list(
             self.input_dim
             - np.arange(0, self.num_blocks)
@@ -169,13 +213,15 @@ class Decoder(nn.Module):
         self.out = nn.Linear(input_dim, input_dim)
 
     def forward(self, latent):
-        # Pass through MLP
         net = self.net(latent)
         out = self.out(net)
         return out
 
 
 class VAEModel(nn.Module):
+    """
+    Variational Autoencoder model, to obtain latent representation from input variables, and the associated reconstruction..
+    """
     def __init__(self, Encoder, Decoder):
         super(VAEModel, self).__init__()
         self.Encoder = Encoder
@@ -189,13 +235,16 @@ class VAEModel(nn.Module):
             mean, torch.exp(0.5 * log_var)
         )  # Variance from log variance
 
-        # Decode the latent variable
+        # Decode the latent variable from a random sample
         x_hat = self.Decoder(z)
 
         return x_hat, mean, log_var
 
 
-class ForecastModel_multiyears(nn.Module):
+class Emission_Predictor(nn.Module):
+    """
+    Emission Predictor model, to obtain emission variations from input variables and contexts.
+    """
     def __init__(
         self,
         input_dim,
@@ -205,10 +254,22 @@ class ForecastModel_multiyears(nn.Module):
         width_block,
         activation,
         normalization="batch",
-        dropouts=0,
+        dropouts=0.0,
         uncertainty=True,
     ):
-        super(ForecastModel_multiyears, self).__init__()
+        """
+        Args:
+            input_dim: size of input variables
+            output_configs: configuration of output emissions
+            num_blocks: number of residual blocks
+            dim_block: number of hidden layers in each residual block
+            width_block: number of neurons in hidden layers in each residual block
+            activation: string name of activation function
+            normalization: string name of normalization layer
+            dropouts: numeric value between 0 and 1
+            uncertainty: logical, for training with or without uncertainty
+        """
+        super(Emission_Predictor, self).__init__()
 
         self.input_dim = input_dim
         self.dim_block = dim_block
@@ -220,6 +281,7 @@ class ForecastModel_multiyears(nn.Module):
         self.num_blocks = num_blocks
         self.uncertainty = uncertainty
 
+        #read how many outputs are expected
         if output_configs["output"] == "Sectors":
             self.output_size = 6
         elif output_configs["output"] in ["Total", "TotalECON", "TotalHOUSE"]:
@@ -241,14 +303,17 @@ class ForecastModel_multiyears(nn.Module):
 
         self.net = nn.Sequential(*blocks)
 
+        #check if the output configuration requires both total and per capita emissions, or only one of the two
         if self.output_configs["measure"] == "both":
             self.output_layer = nn.Linear(self.width_block, self.output_size * 2)
         else:
             self.output_layer = nn.Linear(self.width_block, self.output_size)
 
+        #different forward methods depending on self.uncertainty
+        #if trained with uncertainty, learn and output also model uncertainty
         if self.uncertainty:
             self.forward_selected = self.forward_uncertain
-            self.log_var = nn.Linear(self.width_block, self.output_size)
+            self.learned_uncertainty = nn.Linear(self.width_block, self.output_size)
         else:
             self.forward_selected = self.forward_deterministic
 
@@ -257,9 +322,9 @@ class ForecastModel_multiyears(nn.Module):
 
         # Final output layer
         output = self.output_layer(mlp_out)
-        log_var = self.log_var(mlp_out)
+        learned_uncertainty = self.learned_uncertainty(mlp_out)
 
-        return output, log_var
+        return output, learned_uncertainty
 
     def forward_deterministic(self, inputs):
         mlp_out = self.net(inputs)
@@ -273,17 +338,43 @@ class ForecastModel_multiyears(nn.Module):
         return self.forward_selected(inputs)
 
 
-class Full_Model(nn.Module):
+class Full_Prediction_Model(nn.Module):
+    """
+    Model for direct emission prediction, combining VAE and Emission Predictors for simplified pipeline.
+    Assumes Emission Predictor is configured with uncertainty=True.
+    """
     def __init__(self, VAE, Predictor):
-        super(Full_Model, self).__init__()
+        super(Full_Prediction_Model, self).__init__()
         self.VAE = VAE
         self.Predictor = Predictor
         self.Encoder = self.VAE.Encoder
         self.Decoder = self.VAE.Decoder
 
+        assert self.Predictor.uncertainty == True
+
     def forward(
-        self, input_current, input_prev, context_current, context_prev, emissions_prev
+        self, input_current, input_prev, context_current, context_prev
     ):
+        """
+        Given inputs and contexts, outputs emission variations, confidence, and VAE outputs for diagnostics.
+
+        Args:
+            input_current: input variables at time t
+            input_prev: input variables at time t-1
+            context_current: context variables at time t
+            context_prev: context variables at time t-1
+
+        Returns:
+            emission_delta: change in emissions at time t wrt t-1
+            emission_uncertainty: learned uncertainty in emissions_delta
+            recon_current: reconstructed input variables at time t
+            recon_prev: reconstructed input variables at time t-1
+            mean_current: mean latent variables at time t
+            mean_prev: mean latent variables at time t-1
+            log_var_current: log variance of latent variables at time t
+            log_var_prev: log variance of latent variables at time t-1
+
+        """
         mean_current, log_var_current = self.Encoder(input_current)
         mean_prev, log_var_prev = self.Encoder(input_prev)
 
@@ -296,15 +387,14 @@ class Full_Model(nn.Module):
         stacker = torch.cat((z_current, context_current, z_prev, context_prev), dim=1)
 
         # Decode the latent variable
-        emissions_delta, emission_uncertainty = self.Predictor(stacker)
-        emissions_predictions = emissions_prev + emissions_delta
+        emission_delta, emission_uncertainty = self.Predictor(stacker)
 
         # sanity checks
         recon_current = self.Decoder(z_current)
         recon_prev = self.Decoder(z_prev)
 
         return (
-            emissions_delta,
+            emission_delta,
             emission_uncertainty,
             recon_current,
             recon_prev,
@@ -314,92 +404,10 @@ class Full_Model(nn.Module):
             log_var_prev,
         )
 
-
-def VAE_loss_function(x, x_hat, mean, log_var):
-    total_reconstruction_loss = nn.functional.l1_loss(x_hat, x, reduce=False)
-    total_reconstruction_loss = torch.clamp(total_reconstruction_loss, 0, 5.0)
-    total_reconstruction_loss = torch.nanmean(total_reconstruction_loss)
-
-    # KL Divergence term
-    KLD = -0.5 * torch.nanmean(1 + log_var - mean.pow(2) - log_var.exp())
-
-    # Combine reconstruction loss and KL divergence
-    return total_reconstruction_loss, KLD
-
-
-def costum_uncertain_forecast_loss_function(
-    x, x_hat, log_var_uncertainty, mode="regular"
-):
-    """
-    Computes the uncertainty-aware loss, adapting automatically whether x contains
-    one or two representations (e.g., total and per capita values).
-
-    Args:
-        x (torch.Tensor): Ground truth, shape (batch_size, num_vars) or (batch_size, 2 * num_vars)
-        x_hat (torch.Tensor): Predictions, same shape as x
-        log_var_uncertainty (torch.Tensor): Uncertainty estimates, shape (batch_size, num_vars)
-
-    Returns:
-        torch.Tensor: Scalar loss value
-    """
-    # Ensure uncertainty can track gradients
-    if log_var_uncertainty.requires_grad and not log_var_uncertainty.is_leaf:
-        log_var_uncertainty.retain_grad()
-
-    error = (x - x_hat).abs()
-    error = torch.clamp(error, min=-0.0, max=2.0)
-    loss = 0.5 * torch.exp(-log_var_uncertainty) * error
-    if mode == "regular":
-        loss += 0.5 * log_var_uncertainty
-    elif mode == "exponential":
-        loss += torch.exp(log_var_uncertainty)
-    elif mode == "factor":
-        loss += 10 * log_var_uncertainty
-    elif mode == "quadrexp":
-        loss += torch.exp(log_var_uncertainty) ** 2
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
-    loss = loss.nanmean()
-
-    return loss
-
-
-def costum_uncertain_predict_loss_function(
-    x, x_hat, log_var_uncertainty, mode="regular"
-):
-    """
-    Computes the uncertainty-aware loss, adapting automatically whether x contains
-    one or two representations (e.g., total and per capita values).
-
-    Args:
-        x (torch.Tensor): Ground truth, shape (batch_size, num_vars) or (batch_size, 2 * num_vars)
-        x_hat (torch.Tensor): Predictions, same shape as x
-        log_var_uncertainty (torch.Tensor): Uncertainty estimates, shape (batch_size, num_vars)
-
-    Returns:
-        torch.Tensor: Scalar loss value
-    """
-    # Ensure uncertainty can track gradients
-    if log_var_uncertainty.requires_grad and not log_var_uncertainty.is_leaf:
-        log_var_uncertainty.retain_grad()
-
-    error = torch.square(x - x_hat)
-    error = torch.clamp(error, min=-0.0, max=2.0)
-    loss = 0.5 * torch.exp(-log_var_uncertainty) * error
-    if mode == "regular":
-        loss += 0.5 * log_var_uncertainty
-    elif mode == "exponential":
-        loss += torch.tanh_(log_var_uncertainty)
-    elif mode == "factor":
-        loss += 0.005 * log_var_uncertainty
-    else:
-        raise ValueError(f"Unsupported mode: {mode}")
-    loss = loss.nanmean()
-
-    return loss
-
-
 class ForecastModel_Latent(nn.Module):
+    """
+    Model for forecasting the next latent sample from previous latent means, and contexts.
+    """
     def __init__(
         self,
         input_dim,
@@ -409,7 +417,7 @@ class ForecastModel_Latent(nn.Module):
         width_block,
         activation,
         normalization="batch",
-        dropouts=0,
+        dropouts=0.0,
     ):
         super(ForecastModel_Latent, self).__init__()
 
@@ -446,15 +454,18 @@ class ForecastModel_Latent(nn.Module):
         )
         mlp_out = self.net(stack)
 
-        # Final output layer
+        # learn a residual connection
         output = latent_current + self.output_layer(mlp_out)
 
         return output
 
 
-class Latent_Model(nn.Module):
+class Full_Latent_Forecasting_Model(nn.Module):
+    """
+    Wrapper class for forecasting latent space directly from input variables and contexts.
+    """
     def __init__(self, VAE, Forecaster):
-        super(Latent_Model, self).__init__()
+        super(Full_Latent_Forecasting_Model, self).__init__()
         self.VAE = VAE
         self.Forecaster = Forecaster
         self.Encoder = self.VAE.Encoder
@@ -471,3 +482,111 @@ class Latent_Model(nn.Module):
 
         forecast = self.Forecaster(z_current, z_prev, context_next, context_current)
         return forecast
+
+
+def VAE_loss_function(x, x_hat, mean, log_var):
+    """
+    Variational autoencoder loss function.
+
+    Args:
+        x: true input variables
+        x_hat: reconstructed input variables
+        mean: mean of latent variables
+        log_var: log variance of latent variables
+
+    Returns:
+        total_recon_loss: Mean Absolute Reconstruction Error
+        KLD: KL Divergence loss
+
+    """
+    total_reconstruction_loss = nn.functional.l1_loss(x_hat, x, reduce=False)
+    #avoid unstable learning at first iterations
+    total_reconstruction_loss = torch.clamp(total_reconstruction_loss, 0, 5.0)
+    total_reconstruction_loss = torch.nanmean(total_reconstruction_loss)
+
+    # KL Divergence term
+    KLD = -0.5 * torch.nanmean(1 + log_var - mean.pow(2) - log_var.exp())
+
+    # Combine reconstruction loss and KL divergence
+    return total_reconstruction_loss, KLD
+
+
+def costum_uncertain_L1_loss_function(
+    x, x_hat, log_var, mode="regular"
+):
+    """
+    Computes the uncertainty-aware MAE loss, used when forecasting latent spaces
+
+    Args:
+        x: target latent sample
+        x_hat: forecast latent sample
+        log_var: target latent variance
+
+    Returns:
+        Scalar loss value
+    """
+    # Ensure uncertainty can track gradients
+    if log_var.requires_grad and not log_var.is_leaf:
+        log_var.retain_grad()
+
+    #MAE
+    error = (x - x_hat).abs()
+    error = torch.clamp(error, min=-0.0, max=2.0)
+
+    #discount errors by latent variance
+    loss = 0.5 * torch.exp(-log_var) * error
+
+    #apply loss penalty for latent variance, eventually rescaled
+    if mode == "regular":
+        loss += 0.5 * log_var
+    elif mode == "exponential":
+        loss += torch.exp(log_var)
+    elif mode == "factor":
+        loss += 10 * log_var
+    elif mode == "quadrexp":
+        loss += torch.exp(log_var) ** 2
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    loss = loss.nanmean()
+
+    return loss
+
+
+def costum_uncertain_L2_loss_function(
+    x, x_hat, learned_uncertainty, mode="regular"
+):
+    """
+    Computes the uncertainty-aware MSE loss, used when predicting emissions
+
+    Args:
+        x: ground truth emissions
+        x_hat: predicted emissions
+        learned_uncertainty: Uncertainty estimates, shape (batch_size, num_vars)
+
+    Returns:
+        Scalar loss value
+    """
+    # Ensure uncertainty can track gradients
+    if learned_uncertainty.requires_grad and not learned_uncertainty.is_leaf:
+        learned_uncertainty.retain_grad()
+
+    #Squared error
+    error = torch.square(x - x_hat)
+    error = torch.clamp(error, min=-0.0, max=2.0)
+
+    # discount errors by model confidence
+    loss = 0.5 * torch.exp(-learned_uncertainty) * error
+
+    # apply penalty for model uncertainty, eventually rescaled
+    if mode == "regular":
+        loss += 0.5 * learned_uncertainty
+    elif mode == "exponential":
+        loss += torch.tanh_(learned_uncertainty)
+    elif mode == "factor":
+        loss += 0.005 * learned_uncertainty
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+    loss = loss.nanmean()
+
+    return loss
