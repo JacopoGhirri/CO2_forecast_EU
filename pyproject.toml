@@ -1,0 +1,28 @@
+[project]
+name = "eu-emissions-forecast"
+version = "0.1.0"
+description = "Deep learning framework for EU emission projections"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long (formatter handles this)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/training/*.py" = ["E402"]  # multiprocessing requires early import
+
+[tool.ruff.lint.isort]
+known-first-party = ["scripts", "config"]

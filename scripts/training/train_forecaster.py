@@ -34,7 +34,6 @@ def main():
     vae_config = load_config("Models/define_config_VAE.yaml")
 
     batch_size = 128
-    vae_num_epochs = 2500
     scaling_type = "normalization"  # 'maxmin'
 
     vae_activation = vae_config.vae_activation
@@ -48,7 +47,7 @@ def main():
 
     dataset_filename = "Data/pytorch_datasets/unified_dataset.pkl"
     nested_variable_file = "config/data/variable_selection.pkl"
-    with open(nested_variable_file, "r") as file:
+    with open(nested_variable_file) as file:
         nested_variables = [line.strip() for line in file]
 
     if os.path.exists(dataset_filename):
@@ -212,7 +211,7 @@ def main():
     for epoch in range(forecast_num_epochs):
         lat_model.train()
         train_loss = 0
-        for idx, sample in enumerate(train_loader):
+        for _idx, sample in enumerate(train_loader):
             (
                 input_current,
                 context_current,
@@ -243,7 +242,7 @@ def main():
         val_loss = 0.0
         val_accuracy = 0.0
         with torch.inference_mode():
-            for val_idx, val_sample in enumerate(val_loader):
+            for _val_idx, val_sample in enumerate(val_loader):
                 (
                     input_current,
                     context_current,
