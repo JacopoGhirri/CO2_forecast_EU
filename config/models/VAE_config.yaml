@@ -1,0 +1,66 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    python_version: 3.9.18
+    cli_version: 0.19.11
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1752483127
+    t:
+      1:
+      - 1
+      - 55
+      2:
+      - 1
+      - 55
+      3:
+      - 2
+      - 14
+      - 16
+      - 23
+      - 37
+      - 61
+      4: 3.9.18
+      5: 0.19.11
+      8:
+      - 5
+      13: linux-x86_64
+vae_activation:
+  desc: null
+  value: gelu
+vae_dim_blocks:
+  desc: null
+  value: 6
+vae_dropouts:
+  desc: null
+  value: 0.33
+vae_input_dropouts:
+  desc: null
+  value: 0.4
+vae_latent_dim:
+  desc: null
+  value: 10
+vae_lr:
+  desc: null
+  value: 0.0005
+vae_normalization:
+  desc: null
+  value: batch
+vae_num_blocks:
+  desc: null
+  value: 5
+vae_optimizer:
+  desc: null
+  value: adamw
+vae_wd:
+  desc: null
+  value: 0.05
+vae_weight_decay:
+  desc: null
+  value: 0.1
+vae_wr:
+  desc: null
+  value: 0.95

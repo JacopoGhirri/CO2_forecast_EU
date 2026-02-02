@@ -340,7 +340,7 @@ class Emission_Predictor(nn.Module):
 
 class Full_Prediction_Model(nn.Module):
     """
-    Model for direct emission prediction, combining VAE and Emission Predictors for simplified pipeline.
+    Wrapper class for direct emission prediction, combining VAE and Emission Predictors for simplified pipeline.
     Assumes Emission Predictor is configured with uncertainty=True.
     """
     def __init__(self, VAE, Predictor):

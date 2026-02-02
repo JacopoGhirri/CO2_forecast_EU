@@ -1,0 +1,55 @@
+crops_livestock:Fruit_Primary:Production:t
+crops_livestock:Meat,_Poultry:Production:t
+crops_livestock:Meat,_Total:Production:t
+crops_livestock:Vegetables_Primary:Production:t
+crops_livestock:Wheat:Production:t
+energy_consumption:FC_E:GJ_HAB
+energy_consumption:FC_IND_E:GJ_HAB
+energy_consumption:FC_TRA_E:GJ_HAB
+energy_taxes:MIOEUR
+EV_data:EV sales:Buses:BEV:Vehicles
+EV_data:EV sales:Cars:BEV:Vehicles
+EV_data:EV stock share:Buses:EV:percent
+EV_data:EV stock share:Cars:EV:percent
+gdp_quarterly:MillionEUR
+heat_pumps:GWH
+land_use:Cropland:Area:1000_ha
+land_use:Forest_land:Area:1000_ha
+modal_split_transport:AIR
+modal_split_transport:RAIL
+modal_split_transport:ROAD
+modal_split_transport:SEA
+Monthly_electricity_statistics:Distribution Losses:Electricity
+Monthly_electricity_statistics:Net Electricity Production:Total Combustible Fuels
+Monthly_electricity_statistics:Net Electricity Production:Total Renewables (Hydro, Geo, Solar, Wind, Other)
+Monthly_electricity_statistics:Net Electricity Production:Solar
+Monthly_electricity_statistics:Net Electricity Production:Wind
+Monthly_electricity_statistics:Net Electricity Production:Hydro
+Monthly_electricity_statistics:Total Exports:Electricity
+Monthly_electricity_statistics:Total Imports:Electricity
+Monthly_electricity_statistics:Used for pumped storage:Electricity
+Monthly_oil_price_statistics:Diesel (unit/litre):Total price:US dollars
+Monthly_oil_price_statistics:Domestic heating oil (unit/litre):Total price:US dollars
+Monthly_oil_price_statistics:Gasoline (unit/litre):Total price:US dollars
+solar_thermal_surface:THS_M2
+trade:export_volume_index:Chemicals:WORLD
+trade:export_volume_index:Machinery_transportequipment:WORLD
+trade:export_volume_index:Mineral_fuels_lubrificants:WORLD
+trade:export_volume_index:Raw_materials:WORLD
+trade:import_volume_index:Chemicals:WORLD
+trade:import_volume_index:Food_drinks_tobacco:WORLD
+trade:import_volume_index:Machinery_transportequipment:WORLD
+trade:import_volume_index:Mineral_fuels_lubrificants:WORLD
+trade:import_volume_index:Raw_materials:WORLD
+train_performance:Goods_trains:Total:Diesel:THS_train_mk
+train_performance:Goods_trains:Total:Electricity:THS_train_mk
+train_performance:Passenger_trains:Total:Diesel:THS_train_mk
+train_performance:Passenger_trains:Total:Electricity:THS_train_mk
+carbon_price:EU_ETS
+climate:rainfall:POP
+climate:temperature:POP
+climate:temperature_variability:POP
+climate:rainfall:AREA
+climate:temperature:AREA
+climate:temperature_variability:AREA
+population:POP_NC
