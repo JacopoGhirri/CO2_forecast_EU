@@ -1,17 +1,20 @@
 import pickle
-import torch
-import yaml
 from types import SimpleNamespace
-import torch.nn as nn
 
-def save_datasets(full_dataset, filename='datasets.pkl'):
-    with open(filename, 'wb') as f:
+import torch
+import torch.nn as nn
+import yaml
+
+
+def save_datasets(full_dataset, filename="datasets.pkl"):
+    with open(filename, "wb") as f:
         pickle.dump(full_dataset, f)
 
 
-def load_datasets(filename='datasets.pkl'):
-    with open(filename, 'rb') as f:
+def load_datasets(filename="datasets.pkl"):
+    with open(filename, "rb") as f:
         return pickle.load(f)
+
 
 def check_NaN_grad(model):
     for param in model.parameters():
@@ -28,7 +31,8 @@ def load_config(yaml_path):
 
     # remove wandb-specific fields
     clean_config = {
-        k: v["value"] for k, v in raw_config.items()
+        k: v["value"]
+        for k, v in raw_config.items()
         if not k.startswith("_") and k != "wandb_version"
     }
 
