@@ -11,9 +11,9 @@ The projections use:
 2. Latent forecaster to project future latent states
 3. Emission predictor to convert latents to emission predictions
 
-Uncertainty is captured through:
-- Reparameterization sampling in the latent space
-- Learned uncertainty estimates from the predictor
+Uncertainty is captured through reparameterization sampling in the latent
+space before linking latent variables to emissions. Learned uncertainty
+estimates from the predictor are also computed and stored.
 
 Usage:
     python -m scripts.inference.generate_projections
