@@ -1,8 +1,27 @@
+# pyproject.toml
+
 [project]
 name = "eu-emissions-forecast"
 version = "0.1.0"
 description = "Deep learning framework for EU emission projections"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Jacopo Ghirri"}
+]
+
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.4",
+    "pre-commit>=3.0",
+]
 
 [tool.ruff]
 line-length = 88
@@ -22,7 +41,13 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"scripts/training/*.py" = ["E402"]  # multiprocessing requires early import
+# Multiprocessing requires mp.set_start_method before other imports
+"scripts/training/*.py" = ["E402"]
+"scripts/inference/*.py" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["scripts", "config"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
