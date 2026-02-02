@@ -47,7 +47,7 @@ def main():
     vae_wd = config.vae_wd
     vae_optimizer = config.vae_optimizer
 
-    dataset_filename = "Data/pytorch/unified_dataset.pkl"
+    dataset_filename = "Data/pytorch_datasets/unified_dataset.pkl"
     nested_variable_file = "config/data/variable_selection.pkl"
     with open(nested_variable_file, "r") as file:
         nested_variables = [line.strip() for line in file]
@@ -245,7 +245,7 @@ def main():
                     "vae_best_recon_loss": best_recon_loss,
                 }
             )
-    torch.save(vae_best_weights, "Models/VAE_model.pth")
+    torch.save(vae_best_weights, "Data/pytorch_models/VAE_model.pth")
 
     print("VAE Model trained")
 
