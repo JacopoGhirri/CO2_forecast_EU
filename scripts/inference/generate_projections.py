@@ -31,7 +31,6 @@ import multiprocessing as mp
 from functools import partial
 from pathlib import Path
 
-import numpy as np
 import torch
 
 # Must be set before importing torch-dependent modules
@@ -41,8 +40,8 @@ from config.data.output_configs import output_configs
 from scripts.elements.datasets import DatasetProjections2030, DatasetUnified
 from scripts.elements.models import (
     Decoder,
-    Encoder,
     EmissionPredictor,
+    Encoder,
     FullLatentForecastingModel,
     FullPredictionModel,
     LatentForecaster,
@@ -77,9 +76,33 @@ FORECASTER_MODEL_PATH = Path("data/pytorch_models/forecaster_model.pth")
 
 # EU27 country codes
 EU27_COUNTRIES = [
-    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI", "FR", "DE",
-    "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK",
-    "SI", "ES", "SE",
+    "AT",
+    "BE",
+    "BG",
+    "HR",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "EL",
+    "FI",
+    "FR",
+    "DE",
+    "HU",
+    "IE",
+    "IT",
+    "LV",
+    "LT",
+    "LU",
+    "MT",
+    "NL",
+    "PL",
+    "PT",
+    "RO",
+    "SK",
+    "SI",
+    "ES",
+    "SE",
 ]
 
 # Emission sectors (must match output_configs)
@@ -200,7 +223,9 @@ def load_models(
     ).cuda()
 
     # Load full forecasting model
-    full_forecast_model = FullLatentForecastingModel(vae=vae_model, forecaster=forecaster)
+    full_forecast_model = FullLatentForecastingModel(
+        vae=vae_model, forecaster=forecaster
+    )
     full_forecast_model.load_state_dict(torch.load(forecaster_model_path))
     set_eval_mode(full_forecast_model)
 
@@ -262,7 +287,7 @@ def project_country(
     idx_2022 = dataset.index_map.get((country, 2022))
     input_2022 = dataset.input_df[idx_2022].unsqueeze(0)
     mean_2022, log_var_2022 = vae_model.encoder(input_2022)
-    latent_past = reparameterize(mean_2022, torch.exp(0.5 * log_var_2022))
+    reparameterize(mean_2022, torch.exp(0.5 * log_var_2022))
 
     # Average historical latent variance for sampling
     avg_log_var = (log_var_2023 + log_var_2022) / 2
@@ -310,7 +335,6 @@ def project_country(
         results.append(row)
 
         # Update history for next iteration
-        latent_past = latent_prev
         latent_prev = latent_current
         mean_past = mean_prev
         mean_prev = mean_current
@@ -428,7 +452,9 @@ def main():
         writer = csv.writer(f)
         writer.writerow(header)
 
-    print(f"Starting {N_MC_SAMPLES} Monte Carlo projections with {N_PROCESSES} processes")
+    print(
+        f"Starting {N_MC_SAMPLES} Monte Carlo projections with {N_PROCESSES} processes"
+    )
     print(f"Output: {OUTPUT_PATH}")
 
     # Create partial function with fixed arguments
@@ -459,7 +485,9 @@ def main():
             print(f"Saved chunk {chunk_start}-{chunk_end - 1}")
 
     print(f"\nProjections complete! Results saved to {OUTPUT_PATH}")
-    print(f"Total rows: {N_MC_SAMPLES * len(EU27_COUNTRIES) * len(list(PROJECTION_YEARS))}")
+    print(
+        f"Total rows: {N_MC_SAMPLES * len(EU27_COUNTRIES) * len(list(PROJECTION_YEARS))}"
+    )
 
 
 if __name__ == "__main__":
