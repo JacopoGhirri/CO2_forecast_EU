@@ -1,0 +1,245 @@
+# =============================================================================
+# Data Manifest for EU Emissions Forecast Replication
+# =============================================================================
+# 
+# This file lists all data files required to replicate the analysis.
+# All files have undergone pre-processing from their original source.
+# Preprocessing is reported in script TODO
+#
+# File organization:
+#   - raw_timeseries: Historical data from various sources (Eurostat, IEA, etc.)
+#   - projections: Future scenario data (GDP, population, climate projections)
+#   - external: Third-party projection comparisons (OECD, EEA, PyPSA)
+#   - pytorch_datasets: Pre-processed cached datasets (optional, can be regenerated)
+#   - pytorch_models: Trained model weights (optional, can be retrained)
+#   - model_outputs: Generated projections (optional, can be regenerated)
+#   - sensitivity: Sensitivity analysis results (optional, can be regenerated)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Raw Time Series Data (Required)
+# These are the source data files that cannot be regenerated
+# -----------------------------------------------------------------------------
+
+raw_timeseries:
+  # Emissions data
+  - path: data/full_timeseries/air_emissions_yearly_full.csv
+    gdrive_id: "1Y7H58wViSjitNFZXwGnxNv_fl14p_tIC"
+    description: "Annual air emissions by country, sector, and gas type (levels)"
+    source: "Eurostat"
+    
+  - path: data/full_timeseries/air_emissions_yearly_diff.csv
+    gdrive_id: "1QV3Pj7aZmP3rPV5UBn1Kr7IIdOjm2xdC"
+    description: "Annual air emissions year-over-year differences"
+    source: "Eurostat"
+
+  # Energy data
+  - path: data/full_timeseries/energy_consumption.csv
+    gdrive_id: "1ZdcaTNY8ur7_gKY7fOgPWXlVU12k_gtn"
+    description: "Final energy consumption by sector"
+    source: "Eurostat"
+    
+  - path: data/full_timeseries/energy_taxes.csv
+    gdrive_id: "1s3jcV2EWRukSKJ8Orbd9o6fNcjQ-lrQJ"
+    description: "Energy tax revenues"
+    source: "Eurostat"
+    
+  - path: data/full_timeseries/Monthly_electricity_statistics.csv
+    gdrive_id: "13ZfM5qF4vgNFLifL7WkaJyGFA8QldFFX"
+    description: "Monthly electricity production, imports, exports by source"
+    source: "IEA"
+    
+  - path: data/full_timeseries/Monthly_oil_price_statistics.csv
+    gdrive_id: "13kCinKT-jtG7_rM57i9J4ZSRcpENE7wB"
+    description: "Monthly fuel prices (diesel, gasoline, heating oil)"
+    source: "IEA"
+
+  # Renewable energy
+  - path: data/full_timeseries/heat_pumps.csv
+    gdrive_id: "1oEZMABEOxN_jKiV0ScB57agLGaywjLSI"
+    description: "Heat pump capacity and installations"
+    source: "Eurostat"
+    
+  - path: data/full_timeseries/solar_thermal_surface.csv
+    gdrive_id: "1g93uzMHicS9sM7hsH2Rt1WSm5U5NKuWs"
+    description: "Solar thermal collector surface area"
+    source: "Eurostat"
+    
+  - path: data/full_timeseries/renewable_share.csv
+    gdrive_id: "1HC3AQQA-zlcrl2pLmdqNum7sA1KsJwW5"
+    description: "Renewable energy share in final consumption"
+    source: "Eurostat"
+    
+  - path: data/full_timeseries/ghg_intensity_electricity_production.csv
+    gdrive_id: "1GtFAOzonQOziAAr80LO_p5ImfMmDYJMi"
+    description: "GHG intensity of electricity production"
+    source: "EEA"
+
+  # Transport
+  - path: data/full_timeseries/EV_data.csv
+    gdrive_id: "1BRh9gu1auoN8acYj6gP7PGyuLrVIT4WS"
+    description: "Electric vehicle sales and stock share"
+    source: "IEA"
+    
+  - path: data/full_timeseries/modal_split_transport.csv
+    gdrive_id: "1y6FBMl_M2kz6Xrqbht6BYegQGp4Hlk_E"
+    description: "Modal split of passenger and freight transport"
+    source: "Eurostat"
+    
+  - path: data/full_timeseries/train_performance.csv
+    gdrive_id: "1RACb1fuSG5ApPR1ZgcjJsO92EkfwwShz"
+    description: "Train performance by fuel type"
+    source: "Eurostat"
+
+  # Agriculture and land use
+  - path: data/full_timeseries/crops_livestock.csv
+    gdrive_id: "1dB0xPxeYIzEwSx9pjRmxEILAeiAC1K37"
+    description: "Crop production and livestock data"
+    source: "FAO"
+    
+  - path: data/full_timeseries/land_use.csv
+    gdrive_id: "1l66-sgDwFop7J3RPdFGgzFdaQ4eGR3Wg"
+    description: "Land use by category (cropland, forest, etc.)"
+    source: "FAO"
+
+  # Trade
+  - path: data/full_timeseries/trade.csv
+    gdrive_id: "16LYG3q5RDojTI7U6TLsk7W288daZ1U55"
+    description: "Trade volume indices by commodity type"
+    source: "Eurostat"
+
+  # Economic indicators
+  - path: data/full_timeseries/gdp_quarterly.csv
+    gdrive_id: "1uvd0J0LpwHQhNd9NA0yhpFAbf8eq-LyW"
+    description: "Quarterly GDP data"
+    source: "Eurostat"
+    
+  - path: data/full_timeseries/population.csv
+    gdrive_id: "17p2WHNCVnUNlp1C-8R5k-jfhZ5mNsFIW"
+    description: "Annual population data"
+    source: "Eurostat"
+    
+  - path: data/full_timeseries/carbon_prices_yearly.csv
+    gdrive_id: "1ZiCYn8N2WdggbuivKyaOGvDpgRue-LQz"
+    description: "EU ETS carbon prices"
+    source: "World Bank"
+
+  # Climate data
+  - path: data/full_timeseries/climate.csv
+    gdrive_id: "1P953J9BlS7j0nIKydwDZisq9LzMtwBdf"
+    description: "Climate variables (temperature, precipitation, variability)"
+    source: "Copernicus ERA5"
+    
+  - path: data/full_timeseries/Monthly_hdd_cdd.csv
+    gdrive_id: "1cTlWw6Gk-phEQSMeAHrHb0Jbsj5W1fRG"
+    description: "Monthly heating and cooling degree days"
+    source: "Eurostat"
+
+# -----------------------------------------------------------------------------
+# Projection Data (Required for future scenarios)
+# -----------------------------------------------------------------------------
+
+projections:
+  - path: data/full_timeseries/projections/gdp_quarterly.csv
+    gdrive_id: "12ZV5N0nGcwkX7R7g4QoxSrXY3HwZ6Oys"
+    description: "Projected quarterly GDP 2023-2030"
+    source: "OECD/IMF projections"
+    
+  - path: data/full_timeseries/projections/population.csv
+    gdrive_id: "1swlcyxov_mcH1dH-woUXzfBpNQkTuriN"
+    description: "Projected population 2023-2030"
+    source: "UN Population Division"
+    
+  - path: data/full_timeseries/projections/climate.csv
+    gdrive_id: "1VKN3TDyaxjebOhEhm2VtpPLSfm6CrQke"
+    description: "Projected climate variables 2023-2030"
+    source: "Climate model projections"
+
+# -----------------------------------------------------------------------------
+# External Comparison Data (Required for Figure 1)
+# -----------------------------------------------------------------------------
+
+external_comparisons:
+  - path: data/external/oecd_projections.csv
+    gdrive_id: "13m0bZLjSF85LXt8mwgnjVu1LK1JjdIsU"
+    description: "OECD emission projections (BAU and ET scenarios)"
+    source: "OECD"
+    
+  - path: data/external/eea_projections.xlsx
+    gdrive_id: "17lqxJ1HKn7gX8kv8ndkl_O3iiOo8-noW"
+    description: "EEA emission projections (WEM and WAM scenarios)"
+    source: "European Environment Agency"
+    
+  - path: data/external/pypsa_projections.csv
+    gdrive_id: "1gQLPezhD5DT2VMmtXcMkCkIlT46Dody-"
+    description: "PyPSA-Eur model projections"
+    source: "PyPSA-Eur project"
+
+# -----------------------------------------------------------------------------
+# Pre-computed Datasets (Optional - can be regenerated)
+# Set gdrive_id to regenerate locally if not available
+# -----------------------------------------------------------------------------
+
+cached_datasets:
+  - path: data/pytorch_datasets/unified_dataset.pkl
+    gdrive_id: "1JH3lIrq3WPPGsN7buqgPUZ5jNoqlbXEy"
+    description: "Pre-processed unified dataset with scaling parameters"
+    regenerate_with: "scripts/training/train_vae.py"
+    optional: true
+
+# -----------------------------------------------------------------------------
+# Trained Model Weights (Optional - can be retrained)
+# Set gdrive_id to retrain locally if not available
+# -----------------------------------------------------------------------------
+
+trained_models:
+  - path: data/pytorch_models/vae_model.pth
+    gdrive_id: "1lA-b7_IF2i4BsrOj3OuTpr0PTnpSPYx_"
+    description: "Trained VAE model weights"
+    regenerate_with: "scripts/training/train_vae.py"
+    optional: true
+    
+  - path: data/pytorch_models/predictor_model.pth
+    gdrive_id: "16OBmP_GXt24ajARj-mWszTY6KC62D6p6"
+    description: "Trained emission predictor weights"
+    regenerate_with: "scripts/training/train_predictor.py"
+    optional: true
+    
+  - path: data/pytorch_models/forecaster_model.pth
+    gdrive_id: "1fQB3tw7_D7Ape7Ba_zjTvrLdQj6ZurP-"
+    description: "Trained latent forecaster weights"
+    regenerate_with: "scripts/training/train_forecaster.py"
+    optional: true
+
+# -----------------------------------------------------------------------------
+# Generated Outputs (Optional - can be regenerated)
+# -----------------------------------------------------------------------------
+
+generated_outputs:
+  - path: data/projections/mc_projections.csv
+    gdrive_id: "1t8eJD4cc8IXQ3jTLj5SidcztTui4OyJB"
+    description: "Monte Carlo projection samples (10,000 samples)"
+    regenerate_with: "scripts/inference/generate_projections.py"
+    optional: true
+    note: "Large file (~800MB)"
+
+# -----------------------------------------------------------------------------
+# Metadata
+# -----------------------------------------------------------------------------
+
+metadata:
+  version: "1.0.0"
+  last_updated: "2025-02-03"
+  repository: "eu-emissions-forecast"
+  contact: "Jacopo Ghirri"
+  license: "MIT"
+  
+  data_sources:
+    eurostat: "https://ec.europa.eu/eurostat"
+    iea: "https://www.iea.org/data-and-statistics"
+    fao: "https://www.fao.org/faostat"
+    eea: "https://www.eea.europa.eu"
+    copernicus: "https://cds.climate.copernicus.eu"
+    world_bank: "https://carbonpricingdashboard.worldbank.org"
+    oecd: "https://www.oecd.org/environment"
+    pypsa: "https://pypsa-eur.readthedocs.io"
