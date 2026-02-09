@@ -400,9 +400,9 @@ def compute_targets(oecd_df: pd.DataFrame) -> pd.DataFrame:
     eu27_target = pd.DataFrame(
         {
             "geo": ["EU27"],
-            "corrected_target_2030_tonnes": [eu27_ff55_target * 1e6]
-            if not eu27_1990.empty
-            else [0],
+            "corrected_target_2030_tonnes": (
+                [eu27_ff55_target * 1e6] if not eu27_1990.empty else [0]
+            ),
         }
     )
     esr_targets = pd.concat([esr_targets, eu27_target], ignore_index=True)

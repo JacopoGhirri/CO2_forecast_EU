@@ -124,8 +124,20 @@ STAGE_GROUPS = {
     "inference": ["inference"],
     "analysis": ["sobol", "perturbation"],
     "figures": ["fig1", "fig2", "fig3", "fig4"],
-    "full": ["download", "verify", "train_vae", "train_predictor", "train_forecaster",
-             "inference", "sobol", "perturbation", "fig1", "fig2", "fig3", "fig4"],
+    "full": [
+        "download",
+        "verify",
+        "train_vae",
+        "train_predictor",
+        "train_forecaster",
+        "inference",
+        "sobol",
+        "perturbation",
+        "fig1",
+        "fig2",
+        "fig3",
+        "fig4",
+    ],
 }
 
 
@@ -148,13 +160,15 @@ def check_gpu_availability() -> bool:
     """Check if CUDA GPU is available."""
     try:
         import torch
+
         return torch.cuda.is_available()
     except ImportError:
         return False
 
 
-def run_stage(stage_name: str, stage_config: dict, gpu_id: int = None,
-              dry_run: bool = False) -> bool:
+def run_stage(
+    stage_name: str, stage_config: dict, gpu_id: int = None, dry_run: bool = False
+) -> bool:
     """
     Run a single pipeline stage.
 
@@ -193,7 +207,7 @@ def run_stage(stage_name: str, stage_config: dict, gpu_id: int = None,
     start_time = time.time()
 
     try:
-        result = subprocess.run(
+        subprocess.run(
             cmd,
             cwd=str(REPO_ROOT),
             env=env,
@@ -205,7 +219,10 @@ def run_stage(stage_name: str, stage_config: dict, gpu_id: int = None,
 
     except subprocess.CalledProcessError as e:
         elapsed = time.time() - start_time
-        log(f"  ✗ Failed after {elapsed:.1f} seconds (exit code {e.returncode})", "ERROR")
+        log(
+            f"  ✗ Failed after {elapsed:.1f} seconds (exit code {e.returncode})",
+            "ERROR",
+        )
         return False
 
     except Exception as e:
@@ -245,8 +262,12 @@ def expand_stages(stage_specs: list) -> list:
 # =============================================================================
 
 
-def run_pipeline(stages: list, gpu_id: int = None, dry_run: bool = False,
-                 continue_on_error: bool = False) -> dict:
+def run_pipeline(
+    stages: list,
+    gpu_id: int = None,
+    dry_run: bool = False,
+    continue_on_error: bool = False,
+) -> dict:
     """
     Run the replication pipeline.
 
@@ -268,7 +289,9 @@ def run_pipeline(stages: list, gpu_id: int = None, dry_run: bool = False,
 
     # Check GPU if needed
     gpu_available = check_gpu_availability()
-    gpu_stages = [s for s in stages if PIPELINE_STAGES.get(s, {}).get("gpu_required", False)]
+    gpu_stages = [
+        s for s in stages if PIPELINE_STAGES.get(s, {}).get("gpu_required", False)
+    ]
 
     if gpu_stages and not gpu_available:
         log("WARNING: Some stages require GPU but CUDA is not available", "WARNING")
@@ -277,10 +300,12 @@ def run_pipeline(stages: list, gpu_id: int = None, dry_run: bool = False,
             log("Use --continue-on-error to run CPU-only stages", "WARNING")
 
     log(f"\n{'=' * 70}")
-    log(f"EU EMISSIONS FORECAST REPLICATION PIPELINE")
+    log("EU EMISSIONS FORECAST REPLICATION PIPELINE")
     log(f"{'=' * 70}")
     log(f"Stages to run: {', '.join(stages)}")
-    log(f"GPU: {'cuda:' + str(gpu_id) if gpu_id is not None else ('available' if gpu_available else 'not available')}")
+    log(
+        f"GPU: {'cuda:' + str(gpu_id) if gpu_id is not None else ('available' if gpu_available else 'not available')}"
+    )
     log(f"Dry run: {dry_run}")
     log(f"{'=' * 70}\n")
 
@@ -313,7 +338,9 @@ def run_pipeline(stages: list, gpu_id: int = None, dry_run: bool = False,
             failed_stages.append(stage_name)
 
             if not continue_on_error:
-                log(f"\nPipeline stopped due to failure in stage: {stage_name}", "ERROR")
+                log(
+                    f"\nPipeline stopped due to failure in stage: {stage_name}", "ERROR"
+                )
                 break
 
     # Print summary
@@ -372,46 +399,41 @@ Examples:
     python run_replication.py --skip download      # Skip data download
     python run_replication.py --gpu 0 train        # Train on GPU 0
     python run_replication.py --dry-run full       # Show what would run
-        """
+        """,
     )
 
     parser.add_argument(
         "stages",
         nargs="*",
         default=["full"],
-        help="Stages or stage groups to run (default: full)"
+        help="Stages or stage groups to run (default: full)",
     )
 
-    parser.add_argument(
-        "--skip",
-        nargs="+",
-        default=[],
-        help="Stages to skip"
-    )
+    parser.add_argument("--skip", nargs="+", default=[], help="Stages to skip")
 
     parser.add_argument(
         "--gpu",
         type=int,
         default=None,
-        help="GPU ID to use (default: use all available)"
+        help="GPU ID to use (default: use all available)",
     )
 
     parser.add_argument(
-        "--dry-run", "-n",
+        "--dry-run",
+        "-n",
         action="store_true",
-        help="Show what would be executed without running"
+        help="Show what would be executed without running",
     )
 
     parser.add_argument(
-        "--continue-on-error", "-c",
+        "--continue-on-error",
+        "-c",
         action="store_true",
-        help="Continue to next stage if a stage fails"
+        help="Continue to next stage if a stage fails",
     )
 
     parser.add_argument(
-        "--list", "-l",
-        action="store_true",
-        help="List available stages and exit"
+        "--list", "-l", action="store_true", help="List available stages and exit"
     )
 
     args = parser.parse_args()

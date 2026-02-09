@@ -15,7 +15,6 @@ Usage:
 """
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -103,12 +102,12 @@ def check_cuda() -> dict:
 
     try:
         import torch
+
         cuda_info["available"] = torch.cuda.is_available()
         if cuda_info["available"]:
             cuda_info["version"] = torch.version.cuda
             cuda_info["devices"] = [
-                torch.cuda.get_device_name(i)
-                for i in range(torch.cuda.device_count())
+                torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())
             ]
     except ImportError:
         pass
@@ -289,22 +288,22 @@ def main():
     )
 
     parser.add_argument(
-        "--check-only", "-c",
+        "--check-only",
+        "-c",
         action="store_true",
-        help="Only check environment without installing packages"
+        help="Only check environment without installing packages",
     )
 
     parser.add_argument(
         "--no-optional",
         action="store_true",
-        help="Skip installation of optional packages"
+        help="Skip installation of optional packages",
     )
 
     args = parser.parse_args()
 
     success = setup_environment(
-        check_only=args.check_only,
-        install_optional=not args.no_optional
+        check_only=args.check_only, install_optional=not args.no_optional
     )
 
     sys.exit(0 if success else 1)

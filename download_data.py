@@ -19,10 +19,8 @@ Requirements:
 
 import argparse
 import hashlib
-import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -39,6 +37,7 @@ except ImportError:
     def tqdm(iterable, **kwargs):
         return iterable
 
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -54,10 +53,16 @@ GDRIVE_URL_TEMPLATE = "https://drive.google.com/uc?id={}"
 CATEGORY_CONFIG = {
     "raw_timeseries": {"required": True, "description": "Raw time series data"},
     "projections": {"required": True, "description": "Projection data for scenarios"},
-    "external_comparisons": {"required": True, "description": "External comparison data"},
+    "external_comparisons": {
+        "required": True,
+        "description": "External comparison data",
+    },
     "cached_datasets": {"required": False, "description": "Pre-computed datasets"},
     "trained_models": {"required": False, "description": "Trained model weights"},
-    "generated_outputs": {"required": False, "description": "Generated projection outputs"},
+    "generated_outputs": {
+        "required": False,
+        "description": "Generated projection outputs",
+    },
 }
 
 
@@ -85,7 +90,9 @@ def get_file_hash(filepath: Path, algorithm: str = "md5") -> str:
     return hash_func.hexdigest()
 
 
-def download_from_gdrive(gdrive_id: str, output_path: Path, quiet: bool = False) -> bool:
+def download_from_gdrive(
+    gdrive_id: str, output_path: Path, quiet: bool = False
+) -> bool:
     """
     Download a file from Google Drive.
 
@@ -127,8 +134,9 @@ def format_size(size_bytes: int) -> str:
 # =============================================================================
 
 
-def collect_files(manifest: dict, categories: Optional[list] = None,
-                  include_optional: bool = False) -> list:
+def collect_files(
+    manifest: dict, categories: list | None = None, include_optional: bool = False
+) -> list:
     """
     Collect all files to download from manifest.
 
@@ -163,8 +171,9 @@ def collect_files(manifest: dict, categories: Optional[list] = None,
     return files
 
 
-def download_files(files: list, repo_root: Path, dry_run: bool = False,
-                   force: bool = False) -> dict:
+def download_files(
+    files: list, repo_root: Path, dry_run: bool = False, force: bool = False
+) -> dict:
     """
     Download files from Google Drive.
 
@@ -224,7 +233,7 @@ def download_files(files: list, repo_root: Path, dry_run: bool = False,
             print(f"  ✓ Downloaded ({format_size(size)})")
             stats["downloaded"] += 1
         else:
-            print(f"  ✗ Download failed")
+            print("  ✗ Download failed")
             stats["failed"] += 1
 
     return stats
@@ -257,7 +266,9 @@ def verify_files(files: list, repo_root: Path) -> dict:
 
     for file_entry in files:
         path = repo_root / file_entry["path"]
-        optional = file_entry.get("optional", False) or not file_entry.get("category_required", True)
+        optional = file_entry.get("optional", False) or not file_entry.get(
+            "category_required", True
+        )
 
         if path.exists():
             size = path.stat().st_size
@@ -288,7 +299,7 @@ def verify_files(files: list, repo_root: Path) -> dict:
         for f in missing_required:
             print(f"  - {f['path']}")
             if f.get("gdrive_id") == "##GDRIVE_ID##":
-                print(f"    (Google Drive ID not configured in manifest)")
+                print("    (Google Drive ID not configured in manifest)")
 
     if missing_optional:
         print(f"\n○ {len(missing_optional)} optional files are missing.")
@@ -313,7 +324,9 @@ def print_manifest_summary(manifest: dict):
 
         print(f"{category} ({required_str}):")
         print(f"  {config['description']}")
-        print(f"  Files: {len(files)} total, {configured} with Google Drive IDs configured")
+        print(
+            f"  Files: {len(files)} total, {configured} with Google Drive IDs configured"
+        )
         print()
 
 
@@ -334,58 +347,63 @@ Examples:
     python download_data.py --dry-run          # Show what would be downloaded
     python download_data.py --verify           # Check which files exist
     python download_data.py --summary          # Show manifest summary
-        """
+        """,
     )
 
     parser.add_argument(
-        "--all", "-a",
+        "--all",
+        "-a",
         action="store_true",
-        help="Download all files including optional (models, cached data)"
+        help="Download all files including optional (models, cached data)",
     )
 
     parser.add_argument(
-        "--category", "-c",
+        "--category",
+        "-c",
         nargs="+",
         choices=list(CATEGORY_CONFIG.keys()),
-        help="Download only specific categories"
+        help="Download only specific categories",
     )
 
     parser.add_argument(
-        "--dry-run", "-n",
+        "--dry-run",
+        "-n",
         action="store_true",
-        help="Show what would be downloaded without actually downloading"
+        help="Show what would be downloaded without actually downloading",
     )
 
     parser.add_argument(
-        "--force", "-f",
+        "--force",
+        "-f",
         action="store_true",
-        help="Force re-download even if files exist"
+        help="Force re-download even if files exist",
     )
 
     parser.add_argument(
-        "--verify", "-v",
+        "--verify",
+        "-v",
         action="store_true",
-        help="Verify which files exist without downloading"
+        help="Verify which files exist without downloading",
     )
 
     parser.add_argument(
-        "--summary", "-s",
-        action="store_true",
-        help="Print manifest summary and exit"
+        "--summary", "-s", action="store_true", help="Print manifest summary and exit"
     )
 
     parser.add_argument(
-        "--manifest", "-m",
+        "--manifest",
+        "-m",
         type=Path,
         default=MANIFEST_PATH,
-        help=f"Path to manifest file (default: {MANIFEST_PATH})"
+        help=f"Path to manifest file (default: {MANIFEST_PATH})",
     )
 
     parser.add_argument(
-        "--repo-root", "-r",
+        "--repo-root",
+        "-r",
         type=Path,
         default=REPO_ROOT,
-        help=f"Repository root directory (default: {REPO_ROOT})"
+        help=f"Repository root directory (default: {REPO_ROOT})",
     )
 
     args = parser.parse_args()
@@ -402,7 +420,7 @@ Examples:
     files = collect_files(
         manifest,
         categories=args.category,
-        include_optional=args.all or bool(args.category)
+        include_optional=args.all or bool(args.category),
     )
 
     if not files:
@@ -416,10 +434,7 @@ Examples:
 
     # Download mode
     stats = download_files(
-        files,
-        args.repo_root,
-        dry_run=args.dry_run,
-        force=args.force
+        files, args.repo_root, dry_run=args.dry_run, force=args.force
     )
 
     # Print summary
