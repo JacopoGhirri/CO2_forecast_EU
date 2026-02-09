@@ -4,7 +4,7 @@
 # 
 # This file lists all data files required to replicate the analysis.
 # All files have undergone pre-processing from their original source.
-# Preprocessing is reported in script TODO
+# Preprocessing is reported in scripts/preprocessing/
 #
 # File organization:
 #   - raw_timeseries: Historical data from various sources (Eurostat, IEA, etc.)

@@ -1,0 +1,423 @@
+# =============================================================================
+# Projection Data Preprocessing Script
+# =============================================================================
+#
+# This script preprocesses projection/forecast data for 2024-2030 scenarios.
+# It creates projected values for GDP, population, and climate based on
+# external forecasts (IMF, Eurostat, climate models).
+# The operations of this script are reported, but not included in the pipeline,
+# which directly downloads processed csv files stored in cloud.
+#
+# Input:
+#   - IMF GDP growth forecasts
+#   - Eurostat population projections
+#   - Climate model projections (SSP3-7.0 scenario)
+#   - Historical processed data (from preprocess_historical.R)
+#
+# Output:
+#   - data/full_timeseries/projections/gdp_quarterly.csv
+#   - data/full_timeseries/projections/population.csv
+#   - data/full_timeseries/projections/climate.csv
+#
+# Usage:
+#   Rscript scripts/preprocessing/preprocess_projections.R
+#
+# Requirements:
+#   - Run preprocess_historical.R first to generate baseline data
+#   - install.packages(c("tidyverse", "readxl", "countrycode"))
+#
+# Author: Jacopo Ghirri
+# License: MIT
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Setup
+# -----------------------------------------------------------------------------
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(readr)
+  library(readxl)
+  library(countrycode)
+})
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
+# EU27 country codes
+EU27_COUNTRIES <- c(
+  "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "EL",
+  "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK",
+  "SI", "ES", "SE"
+)
+
+# Projection years
+PROJECTION_YEARS <- 2024:2030
+
+# Directories
+RAW_DIR <- "data/raw"
+HISTORICAL_DIR <- "data/full_timeseries"
+OUTPUT_DIR <- "data/full_timeseries/projections"
+
+# Create output directory
+dir.create(OUTPUT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+
+#' Save processed projection data
+#'
+#' @param df Data frame to save
+#' @param filename Output filename
+save_projection <- function(df, filename) {
+  filepath <- file.path(OUTPUT_DIR, filename)
+  write.csv(df, filepath, row.names = FALSE)
+  message(sprintf("Saved: %s (%d rows)", filepath, nrow(df)))
+}
+
+
+# =============================================================================
+# GDP Quarterly Projections
+# =============================================================================
+
+#' Project quarterly GDP based on IMF growth forecasts
+#'
+#' Takes the last available quarterly GDP values and applies annual growth
+#' rates from IMF forecasts to project forward.
+#'
+#' @return Data frame with projected quarterly GDP
+project_gdp_quarterly <- function() {
+  message("\n--- Projecting GDP Quarterly ---")
+
+  # Load IMF GDP growth forecasts
+  gdp_forecast <- read_excel(
+    file.path(RAW_DIR, "data_forecast/imf-dm-export-20250723.xls"),
+    col_types = "text"
+  )
+
+  colnames(gdp_forecast)[1] <- "geo"
+
+  # Convert country names to ISO2 codes
+  gdp_forecast$geo <- countrycode(
+    gdp_forecast$geo, "country.name", "iso2c",
+    custom_match = c("Greece" = "EL")
+  )
+
+  gdp_forecast <- gdp_forecast[gdp_forecast$geo %in% EU27_COUNTRIES, ]
+
+  # Convert growth rates to numeric
+  for (col in colnames(gdp_forecast)[-1]) {
+    gdp_forecast[[col]] <- as.numeric(gdp_forecast[[col]])
+  }
+
+  # Load historical quarterly GDP
+  gdp_historical <- read_csv(
+    file.path(HISTORICAL_DIR, "gdp_quarterly.csv"),
+    show_col_types = FALSE
+  )
+
+  # Start with historical data
+  gdp_projected <- gdp_historical
+
+  # Project forward for each country and year
+  for (geo in EU27_COUNTRIES) {
+    for (year in PROJECTION_YEARS) {
+      for (quarter in c(1, 4, 7, 10)) {
+        # Get base GDP from previous year same quarter
+        base_date <- as.Date(paste(year - 1, quarter, 1, sep = "-"))
+        new_date <- as.Date(paste(year, quarter, 1, sep = "-"))
+
+        base_gdp <- gdp_projected$`gdp_quarterly:MillionEUR`[
+          gdp_projected$geo == geo &
+          gdp_projected$time == as.character(base_date)
+        ]
+
+        if (length(base_gdp) == 0 || is.na(base_gdp)) {
+          message(sprintf("  Warning: Missing base GDP for %s, %s", geo, base_date))
+          next
+        }
+
+        # Get annual growth rate from IMF forecast
+        growth_col <- as.character(year)
+        if (!(growth_col %in% colnames(gdp_forecast))) {
+          message(sprintf("  Warning: No growth forecast for year %d", year))
+          next
+        }
+
+        growth_rate <- gdp_forecast[gdp_forecast$geo == geo, growth_col][[1]]
+
+        if (is.na(growth_rate)) {
+          message(sprintf("  Warning: Missing growth rate for %s, %d", geo, year))
+          next
+        }
+
+        # Apply growth rate
+        new_gdp <- base_gdp * (1 + growth_rate / 100)
+
+        # Add to projected data
+        gdp_projected <- gdp_projected %>%
+          add_row(
+            geo = geo,
+            time = as.character(new_date),
+            `gdp_quarterly:MillionEUR` = new_gdp
+          )
+      }
+    }
+  }
+
+  # Sort and filter to projection period
+  gdp_projected <- gdp_projected %>%
+    arrange(geo, time)
+
+  # Keep only projection years (2022+ for context)
+  gdp_projected <- gdp_projected %>%
+    filter(as.numeric(substr(time, 1, 4)) >= 2022)
+
+  save_projection(gdp_projected, "gdp_quarterly.csv")
+
+  return(gdp_projected)
+}
+
+
+# =============================================================================
+# Population Projections
+# =============================================================================
+
+#' Project population based on Eurostat projections
+#'
+#' Uses Eurostat demographic projections, calibrated to match recent
+#' historical values.
+#'
+#' @return Data frame with projected population
+project_population <- function() {
+  message("\n--- Projecting Population ---")
+
+  # Load Eurostat population projections
+  pop_proj_raw <- read_excel(
+    file.path(RAW_DIR, "data_forecast/proj_23np__custom_17574539_spreadsheet.xlsx"),
+    skip = 10
+  )
+
+  # Clean up the data
+  # Remove empty rows and select relevant columns (point estimates only)
+  pop_proj_raw <- pop_proj_raw[-c(1, 29, 30, 31), ]
+
+  # Select columns: country name + years (skip confidence intervals)
+  year_cols <- seq(2, ncol(pop_proj_raw), by = 2)
+  pop_proj_raw <- pop_proj_raw[, c(1, year_cols)]
+  colnames(pop_proj_raw) <- c("geo", as.character(2022:2030))
+
+  # Convert to ISO2 codes
+  pop_proj_raw$geo <- countrycode(
+    pop_proj_raw$geo, "country.name", "iso2c",
+    custom_match = c("Greece" = "EL")
+  )
+
+  # Convert values to numeric
+  for (col in colnames(pop_proj_raw)[-1]) {
+    pop_proj_raw[[col]] <- as.numeric(pop_proj_raw[[col]])
+  }
+
+  # Load historical population for calibration
+  pop_historical <- read_csv(
+    file.path(HISTORICAL_DIR, "population.csv"),
+    show_col_types = FALSE
+  )
+
+  # Reshape projections to long format
+  pop_proj <- pop_proj_raw %>%
+    pivot_longer(
+      cols = -geo,
+      names_to = "year",
+      values_to = "value"
+    )
+
+  # Calibrate projections to match historical data
+  # Calculate scaling factor based on 2022-2023 overlap
+  calibration_years <- c("2022", "2023")
+
+  for (geo in EU27_COUNTRIES) {
+    # Get historical values
+    hist_vals <- pop_historical$`population:POP_NC`[
+      pop_historical$geo == geo &
+      pop_historical$year %in% calibration_years
+    ]
+
+    # Get projection values for same years
+    proj_vals <- pop_proj$value[
+      pop_proj$geo == geo &
+      pop_proj$year %in% calibration_years
+    ]
+
+    if (length(hist_vals) > 0 && length(proj_vals) > 0 &&
+        !any(is.na(hist_vals)) && !any(is.na(proj_vals))) {
+      # Calculate calibration factor
+      factor <- mean(hist_vals) / mean(proj_vals)
+
+      # Apply calibration
+      pop_proj$value[pop_proj$geo == geo] <-
+        pop_proj$value[pop_proj$geo == geo] * factor
+
+      message(sprintf("  %s: calibration factor = %.4f", geo, factor))
+    }
+  }
+
+  # Rename columns to match historical format
+  colnames(pop_proj) <- c("geo", "year", "population:POP_NC")
+
+  # Sort
+  pop_proj <- pop_proj %>%
+    arrange(geo, year)
+
+  save_projection(pop_proj, "population.csv")
+
+  return(pop_proj)
+}
+
+
+# =============================================================================
+# Climate Projections
+# =============================================================================
+
+#' Project climate variables based on CMIP6 models
+#'
+#' Uses SSP3-7.0 scenario projections, averaged across multiple climate models.
+#' Includes both population-weighted and area-weighted metrics.
+#'
+#' @return Data frame with projected climate variables
+project_climate <- function() {
+  message("\n--- Projecting Climate ---")
+
+  # Load population-weighted climate projections
+  climate_pop <- read_csv(
+    file.path(RAW_DIR, "projection_data_climate_country_pop_2020_weight_2015_2100.csv"),
+    show_col_types = FALSE
+  )
+
+  # Select SSP3-7.0 scenario (moderate-high emissions pathway)
+  climate_pop <- climate_pop[climate_pop$ssp == "ssp370", ]
+
+  # Rearrange and rename columns
+  climate_pop <- climate_pop[, c(2, 1, 3, 6, 7, 8)]
+  colnames(climate_pop) <- c(
+    "geo", "year", "model",
+    "climate:rainfall:POP",
+    "climate:temperature:POP",
+    "climate:temperature_variability:POP"
+  )
+
+  # Convert ISO3 to ISO2
+  climate_pop$geo <- countrycode(
+    climate_pop$geo, "iso3c", "iso2c",
+    custom_match = c(
+      "CPT" = NA, "XA" = NA, "XB" = NA, "XC" = NA, "XD" = NA,
+      "XE" = NA, "XF" = NA, "XG" = NA, "XH" = NA, "XI" = NA,
+      "XL" = NA, "XM" = NA, "XN" = NA, "XO" = NA, "XU" = NA, "XV" = NA
+    )
+  )
+
+  # Load area-weighted climate projections
+  climate_area <- read_csv(
+    file.path(RAW_DIR, "projection_data_climate_country_2015_2100.csv"),
+    show_col_types = FALSE
+  )
+
+  climate_area <- climate_area[climate_area$ssp == "ssp370", c(2, 1, 3, 6, 7, 8)]
+  colnames(climate_area) <- c(
+    "geo", "year", "model",
+    "climate:rainfall:AREA",
+    "climate:temperature:AREA",
+    "climate:temperature_variability:AREA"
+  )
+
+  climate_area$geo <- countrycode(
+    climate_area$geo, "iso3c", "iso2c",
+    custom_match = c(
+      "CPT" = NA, "XA" = NA, "XB" = NA, "XC" = NA, "XD" = NA,
+      "XE" = NA, "XF" = NA, "XG" = NA, "XH" = NA, "XI" = NA,
+      "XL" = NA, "XM" = NA, "XN" = NA, "XO" = NA, "XU" = NA, "XV" = NA
+    )
+  )
+
+  # Merge population and area-weighted data
+  climate_merged <- merge(
+    climate_pop, climate_area,
+    by = c("geo", "year", "model"),
+    all = TRUE
+  )
+
+  # Remove model column and average across models
+  climate_merged <- climate_merged[, -3]
+
+  # Aggregate by country and year (mean across models)
+  climate_agg <- climate_merged %>%
+    group_by(geo, year) %>%
+    summarise(
+      `climate:rainfall:POP` = mean(`climate:rainfall:POP`, na.rm = TRUE),
+      `climate:temperature:POP` = mean(`climate:temperature:POP`, na.rm = TRUE),
+      `climate:temperature_variability:POP` = mean(`climate:temperature_variability:POP`, na.rm = TRUE),
+      `climate:rainfall:AREA` = mean(`climate:rainfall:AREA`, na.rm = TRUE),
+      `climate:temperature:AREA` = mean(`climate:temperature:AREA`, na.rm = TRUE),
+      `climate:temperature_variability:AREA` = mean(`climate:temperature_variability:AREA`, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # Filter to EU27 and projection years
+  climate_agg <- climate_agg %>%
+    filter(
+      geo %in% EU27_COUNTRIES,
+      year >= 2022 & year <= 2030
+    ) %>%
+    arrange(geo, year)
+
+  save_projection(climate_agg, "climate.csv")
+
+  return(climate_agg)
+}
+
+
+# =============================================================================
+# Main Execution
+# =============================================================================
+
+main <- function() {
+  message("=" |> rep(70) |> paste(collapse = ""))
+  message("PROJECTION DATA PREPROCESSING")
+  message("=" |> rep(70) |> paste(collapse = ""))
+  message(sprintf("Output directory: %s", OUTPUT_DIR))
+  message(sprintf("Projection years: %d-%d", min(PROJECTION_YEARS), max(PROJECTION_YEARS)))
+
+  start_time <- Sys.time()
+
+  # Process all projection data
+  tryCatch(
+    project_gdp_quarterly(),
+    error = function(e) message("Error in GDP projection: ", e$message)
+  )
+
+  tryCatch(
+    project_population(),
+    error = function(e) message("Error in population projection: ", e$message)
+  )
+
+  tryCatch(
+    project_climate(),
+    error = function(e) message("Error in climate projection: ", e$message)
+  )
+
+  end_time <- Sys.time()
+  elapsed <- difftime(end_time, start_time, units = "secs")
+
+  message("\n" |> paste0(rep("=", 70) |> paste(collapse = "")))
+  message(sprintf("PROJECTION PREPROCESSING COMPLETE (%.1f seconds)", elapsed))
+  message("=" |> rep(70) |> paste(collapse = ""))
+}
+
+
+# Run if executed directly
+if (!interactive()) {
+  main()
+}
