@@ -1,25 +1,26 @@
 """
-Training script for the Latent Space Forecaster.
+Training script for the CO2 Emission Predictor.
 
-This script trains a neural network to predict future VAE latent states
-from historical latents and context variables. This enables autoregressive
-projection of emissions for 2030 targets.
-
-The forecaster predicts z_t from [z_{t-1}, z_{t-2}, context_t, context_{t-1}],
-learning the temporal evolution of the latent space while preserving the
-correlation structure encoded by the VAE.
+This script trains a neural network to predict sectoral emission changes
+(deltas) from VAE latent representations and context variables. The model
+outputs both predictions and learned uncertainty estimates.
 
 Prerequisites:
     - Trained VAE model (data/pytorch_models/vae_model.pth)
 
 Usage:
-    python -m scripts.training.train_forecaster
+    python -m scripts.training.train_predictor
 
 Outputs:
-    - data/pytorch_models/forecaster_model.pth: Best model weights
+    - data/pytorch_models/predictor_model.pth: Best model weights
+
+Training details:
+    - The VAE encoder weights are frozen during predictor training
+    - The model predicts emission DELTAS: Δy_t = y_t - y_{t-1}
+    - Uncertainty-aware MSE loss balances accuracy and calibration
 
 Reference:
-    Section 4.2.3 "Latent-Space Forecasting Model" in the paper.
+    Section 4.2.2 "Emissions Prediction Model" in the paper.
 """
 
 import multiprocessing as mp
@@ -36,27 +37,28 @@ import torch
 from torch.utils.data import DataLoader
 
 from config.data.output_configs import output_configs
-from scripts.elements.datasets import DatasetForecasting, DatasetUnified
+from scripts.elements.datasets import DatasetPrediction
 from scripts.elements.models import (
     Decoder,
     Encoder,
-    FullLatentForecastingModel,
-    LatentForecaster,
+    EmissionPredictor,
+    FullPredictionModel,
     VAEModel,
-    uncertainty_aware_mae_loss,
+    vae_loss,
+    uncertainty_aware_mse_loss,
 )
 from scripts.utils import (
     check_nan_gradients,
-    count_parameters,
-    freeze_module,
     init_weights,
     load_config,
     load_dataset,
     save_dataset,
+    count_parameters,
+    freeze_module,
 )
 
 # Reproducibility
-SEED = 0
+SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -66,21 +68,21 @@ if torch.cuda.is_available():
 
 def main():
     """
-    Main training loop for the latent forecaster.
+    Main training loop for the emission predictor.
 
     Training procedure:
     1. Load pre-trained VAE and freeze its weights
-    2. Build latent forecaster network
-    3. Create combined model (VAE encoder + forecaster)
-    4. Train using uncertainty-aware MAE loss
-    5. Save best model based on smoothed validation accuracy
+    2. Build emission predictor network
+    3. Create combined model (VAE encoder + predictor)
+    4. Train using uncertainty-aware MSE loss on emission deltas
+    5. Save best model based on smoothed validation loss
     """
     # ==========================================================================
     # Configuration
     # ==========================================================================
 
     vae_config = load_config("config/models/vae_config.yaml")
-    forecast_config = load_config("config/models/latent_forecaster_config.yaml")
+    pred_config = load_config("config/models/co2_predictor_config.yaml")
 
     # Training hyperparameters
     batch_size = 128
@@ -90,74 +92,54 @@ def main():
     # VAE architecture (must match trained model)
     vae_latent_dim = vae_config.vae_latent_dim
 
-    # Forecaster architecture (from config)
-    forecast_width = forecast_config.forecast_width_block
-    forecast_dim = forecast_config.forecast_dim_block
-    forecast_num_blocks = forecast_config.forecast_num_blocks
-    forecast_activation = forecast_config.forecast_activation
-    forecast_normalization = forecast_config.forecast_normalization
-    forecast_dropout = forecast_config.forecast_dropouts
+    # Predictor architecture (from config)
+    pred_width = pred_config.pred_width_block
+    pred_dim = pred_config.pred_dim_block
+    pred_num_blocks = pred_config.pred_num_blocks
+    pred_activation = pred_config.pred_activation
+    pred_normalization = pred_config.pred_normalization
+    pred_dropout = pred_config.pred_dropouts
 
     # Optimizer settings (from config)
-    learning_rate = forecast_config.forecast_lr
-    weight_decay = forecast_config.forecast_wd
-    optimizer_name = forecast_config.forecast_optimizer
+    learning_rate = pred_config.pred_lr
+    weight_decay = pred_config.pred_wd
+    optimizer_name = pred_config.pred_optimizer
+
+    # Loss mode (from config)
+    loss_mode = pred_config.mode_loss
 
     # Paths
-    dataset_path = Path("data/pytorch_datasets/unified_dataset.pkl")
+    dataset_path = Path("data/pytorch_datasets/predictor_dataset.pkl")
     vae_model_path = Path("data/pytorch_models/vae_model.pth")
-    forecaster_model_path = Path("data/pytorch_models/forecaster_model.pth")
+    predictor_model_path = Path("data/pytorch_models/predictor_model.pth")
     variable_file = Path("config/data/variable_selection.txt")
 
     # Ensure output directories exist
-    forecaster_model_path.parent.mkdir(parents=True, exist_ok=True)
+    dataset_path.parent.mkdir(parents=True, exist_ok=True)
+    predictor_model_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ==========================================================================
     # Data Loading
     # ==========================================================================
 
     # Load variable selection
-    with open(variable_file) as f:
+    with open(variable_file, "r") as f:
         nested_variables = [line.strip() for line in f if line.strip()]
 
     # Countries to include (EU27)
     eu27_countries = [
-        "AT",
-        "BE",
-        "BG",
-        "HR",
-        "CY",
-        "CZ",
-        "DK",
-        "EE",
-        "EL",
-        "FI",
-        "FR",
-        "DE",
-        "HU",
-        "IE",
-        "IT",
-        "LV",
-        "LT",
-        "LU",
-        "MT",
-        "NL",
-        "PL",
-        "PT",
-        "RO",
-        "SK",
-        "SI",
-        "ES",
-        "SE",
+        "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI", "FR", "DE",
+        "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK",
+        "SI", "ES", "SE",
     ]
 
-    # Load or create base dataset
+    # Load or create dataset
     if dataset_path.exists():
         print(f"Loading cached dataset from {dataset_path}")
-        base_dataset = load_dataset(dataset_path)
+        full_dataset = load_dataset(dataset_path)
     else:
         print("Creating new dataset...")
-        base_dataset = DatasetUnified(
+        full_dataset = DatasetPrediction(
             path_csvs="data/full_timeseries/",
             output_configs=output_configs,
             select_years=np.arange(2010, 2024),
@@ -166,11 +148,8 @@ def main():
             with_cuda=True,
             scaling_type=scaling_type,
         )
-        save_dataset(base_dataset, dataset_path)
+        save_dataset(full_dataset, dataset_path)
         print(f"Dataset saved to {dataset_path}")
-
-    # Wrap in forecasting dataset (provides 3 time steps)
-    full_dataset = DatasetForecasting(base_dataset)
 
     # Train/validation split
     train_size = int(0.85 * len(full_dataset))
@@ -186,15 +165,15 @@ def main():
         val_dataset, batch_size=batch_size, shuffle=False, drop_last=False
     )
 
-    print(f"Dataset loaded: {full_dataset.base_length} unique samples (5x inflated)")
+    print(f"Dataset loaded: {len(full_dataset)} samples")
     print(f"  Train: {len(train_dataset)}, Validation: {len(val_dataset)}")
 
     # ==========================================================================
     # Model Setup
     # ==========================================================================
 
-    input_dim = len(base_dataset.input_variable_names)
-    context_dim = len(base_dataset.context_variable_names)
+    input_dim = len(full_dataset.input_variable_names)
+    context_dim = len(full_dataset.context_variable_names)
 
     # Build VAE (architecture must match trained model)
     encoder = Encoder(
@@ -224,38 +203,39 @@ def main():
     print(f"Loading pre-trained VAE from {vae_model_path}")
     vae_model.load_state_dict(torch.load(vae_model_path))
 
-    # Build latent forecaster
-    # Input: [z_{t-1}, z_{t-2}, context_t, context_{t-1}]
-    forecaster_input_dim = 2 * (vae_latent_dim + context_dim)
+    # Build emission predictor
+    # Input: [z_t, context_t, z_{t-1}, context_{t-1}]
+    predictor_input_dim = 2 * (vae_latent_dim + context_dim)
 
-    forecaster = LatentForecaster(
-        input_dim=forecaster_input_dim,
-        latent_dim=vae_latent_dim,
-        num_blocks=forecast_num_blocks,
-        dim_block=forecast_dim,
-        width_block=forecast_width,
-        activation=forecast_activation,
-        normalization=forecast_normalization,
-        dropout=forecast_dropout,
+    predictor = EmissionPredictor(
+        input_dim=predictor_input_dim,
+        output_configs=output_configs,
+        num_blocks=pred_num_blocks,
+        dim_block=pred_dim,
+        width_block=pred_width,
+        activation=pred_activation,
+        normalization=pred_normalization,
+        dropout=pred_dropout,
+        uncertainty=True,
     ).cuda()
-    forecaster.apply(init_weights)
+    predictor.apply(init_weights)
 
     # Combine into full model
-    full_model = FullLatentForecastingModel(vae=vae_model, forecaster=forecaster)
+    full_model = FullPredictionModel(vae=vae_model, predictor=predictor)
 
-    print(f"Latent forecaster created with {count_parameters(forecaster):,} parameters")
-    print(f"  Input dimension: {forecaster_input_dim}")
-    print(f"  Output latent dimension: {vae_latent_dim}")
+    print(f"Emission predictor created with {count_parameters(predictor):,} parameters")
+    print(f"  Input dimension: {predictor_input_dim}")
+    print(f"  Output sectors: {predictor.output_size}")
 
     # ==========================================================================
     # Optimizer Setup
     # ==========================================================================
 
-    # Freeze VAE weights - only train the forecaster
+    # Freeze VAE weights - only train the predictor
     freeze_module(full_model.encoder)
-    freeze_module(full_model.vae)
+    freeze_module(full_model.decoder)
 
-    print("VAE weights frozen for forecaster training")
+    print("VAE weights frozen for predictor training")
 
     optimizer_cls = {
         "adamw": torch.optim.AdamW,
@@ -266,9 +246,13 @@ def main():
     if optimizer_cls is None:
         raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
+    # Different learning rates: lower for VAE (if unfrozen), higher for predictor
     optimizer = optimizer_cls(
-        full_model.forecaster.parameters(),
-        lr=learning_rate,
+        [
+            {"params": full_model.encoder.parameters(), "lr": learning_rate * 1e-3},
+            {"params": full_model.decoder.parameters(), "lr": learning_rate * 1e-3},
+            {"params": full_model.predictor.parameters(), "lr": learning_rate},
+        ],
         weight_decay=weight_decay,
         eps=1e-6,
     )
@@ -279,6 +263,7 @@ def main():
 
     print(f"\nStarting training for {num_epochs} epochs...")
     print(f"  Optimizer: {optimizer_name}, LR: {learning_rate}")
+    print(f"  Loss mode: {loss_mode}")
 
     best_val_loss = None
     best_val_loss_smooth = None
@@ -298,34 +283,39 @@ def main():
 
         for batch in train_loader:
             (
-                input_current,  # x_t (target)
-                context_current,  # c_t
-                input_prev,  # x_{t-1}
-                context_prev,  # c_{t-1}
-                input_past,  # x_{t-2}
-                context_past,  # c_{t-2} (not used in this formulation)
+                input_current,
+                context_current,
+                emissions,
+                input_prev,
+                context_prev,
+                emissions_prev,
             ) = batch
 
             optimizer.zero_grad()
 
-            # Forward pass: predict z_t from [z_{t-1}, z_{t-2}, c_t, c_{t-1}]
-            # The model takes (x_{t-1}, x_{t-2}, c_t, c_{t-1}) and internally
-            # encodes x to z before forecasting
-            forecasted_latent = full_model(
-                input_prev, input_past, context_current, context_prev
-            )
+            # Forward pass through combined model
+            # NOTE: emissions_prev is NOT passed to the model - it's only used
+            # to compute the ground truth delta in the training loop
+            (
+                emission_delta_pred,
+                emission_uncertainty,
+                recon_current,
+                recon_prev,
+                mean_current,
+                mean_prev,
+                log_var_current,
+                log_var_prev,
+            ) = full_model(input_current, input_prev, context_current, context_prev)
 
-            # Get target latent distribution parameters
-            mean_target, log_var_target = full_model.encoder(input_current)
+            # Compute ground truth emission delta
+            emission_delta_true = emissions - emissions_prev
 
-            # Loss: uncertainty-aware MAE
-            # The target is the mean of the latent distribution
-            # Uncertainty is provided by the latent variance (from encoder)
-            loss = uncertainty_aware_mae_loss(
-                mean_target,
-                forecasted_latent,
-                log_var_target,
-                mode="regular",
+            # Uncertainty-aware loss
+            loss = uncertainty_aware_mse_loss(
+                emission_delta_true,
+                emission_delta_pred,
+                emission_uncertainty,
+                mode=loss_mode,
             )
 
             # Backward pass
@@ -343,42 +333,61 @@ def main():
         # ----------------------------------------------------------------------
         full_model.eval()
         val_loss = 0.0
+        val_uncertainty = 0.0
         val_accuracy = 0.0
+        val_recon = 0.0
 
         with torch.inference_mode():
             for batch in val_loader:
                 (
                     input_current,
                     context_current,
+                    emissions,
                     input_prev,
                     context_prev,
-                    input_past,
-                    context_past,
+                    emissions_prev,
                 ) = batch
 
-                # Forward pass
-                forecasted_latent = full_model(
-                    input_prev, input_past, context_current, context_prev
-                )
+                (
+                    emission_delta_pred,
+                    emission_uncertainty,
+                    recon_current,
+                    recon_prev,
+                    mean_current,
+                    mean_prev,
+                    log_var_current,
+                    log_var_prev,
+                ) = full_model(input_current, input_prev, context_current, context_prev)
 
-                # Get target latent
-                mean_target, log_var_target = full_model.encoder(input_current)
+                emission_delta_true = emissions - emissions_prev
 
                 # Loss
-                loss = uncertainty_aware_mae_loss(
-                    mean_target,
-                    forecasted_latent,
-                    log_var_target,
-                    mode="regular",
+                loss = uncertainty_aware_mse_loss(
+                    emission_delta_true,
+                    emission_delta_pred,
+                    emission_uncertainty,
+                    mode=loss_mode,
                 )
                 val_loss += loss.item()
 
-                # Accuracy: MSE between forecasted and target latent means
-                val_accuracy += (mean_target - forecasted_latent).pow(2).mean().item()
+                # Metrics
+                val_uncertainty += emission_uncertainty.mean().item()
+
+                # Accuracy: MSE of predicted vs actual emissions (not deltas)
+                emissions_pred = emission_delta_pred + emissions_prev
+                val_accuracy += (emissions_pred - emissions).pow(2).mean().item()
+
+                # Reconstruction loss (monitor VAE health)
+                recon_loss, _ = vae_loss(
+                    input_current, recon_current, mean_current, log_var_current
+                )
+                val_recon += recon_loss.item()
 
         n_val = len(val_loader)
         val_loss /= n_val
+        val_uncertainty /= n_val
         val_accuracy /= n_val
+        val_recon /= n_val
 
         # Smoothed metrics
         val_loss_history.append(val_loss)
@@ -395,14 +404,13 @@ def main():
 
         if best_val_loss_smooth is None or val_loss_smooth < best_val_loss_smooth:
             best_val_loss_smooth = val_loss_smooth
+            best_weights = full_model.state_dict()
 
         if best_val_acc is None or val_accuracy < best_val_acc:
             best_val_acc = val_accuracy
 
-        # Select best model based on smoothed accuracy
         if best_val_acc_smooth is None or val_acc_smooth < best_val_acc_smooth:
             best_val_acc_smooth = val_acc_smooth
-            best_weights = full_model.state_dict()
 
         # ----------------------------------------------------------------------
         # Logging
@@ -411,28 +419,25 @@ def main():
             print(f"\n--- Epoch {epoch} ---")
             print(f"  Train loss: {train_loss:.4f}")
             print(f"  Val loss: {val_loss:.4f} (smooth: {val_loss_smooth:.4f})")
-            print(
-                f"  Val MSE (latent): {val_accuracy:.4f} (smooth: {val_acc_smooth:.4f})"
-            )
-            print(
-                f"  Best: loss={best_val_loss:.4f}, smooth_loss={best_val_loss_smooth:.4f}"
-            )
-            print(
-                f"  Best: acc={best_val_acc:.4f}, smooth_acc={best_val_acc_smooth:.4f}"
-            )
+            print(f"  Val uncertainty: {val_uncertainty:.4f}")
+            print(f"  Val MSE (emissions): {val_accuracy:.4f} (smooth: {val_acc_smooth:.4f})")
+            print(f"  Val VAE recon: {val_recon:.4f}")
+            print(f"  Best smooth loss: {best_val_loss_smooth:.4f}")
+            print(f"  Best smooth acc: {best_val_acc_smooth:.4f}")
 
     # ==========================================================================
     # Save Best Model
     # ==========================================================================
 
     if best_weights is not None:
-        torch.save(best_weights, forecaster_model_path)
-        print(f"\nBest model saved to {forecaster_model_path}")
-        print(f"  Best validation accuracy (smooth): {best_val_acc_smooth:.4f}")
+        torch.save(best_weights, predictor_model_path)
+        print(f"\nBest model saved to {predictor_model_path}")
+        print(f"  Best validation loss (smooth): {best_val_loss_smooth:.4f}")
+        print(f"  Best validation MSE (smooth): {best_val_acc_smooth:.4f}")
     else:
         print("\nWarning: No best weights saved")
 
-    print("\nLatent forecaster training complete!")
+    print("\nEmission predictor training complete!")
 
 
 if __name__ == "__main__":
