@@ -11,9 +11,11 @@ This script orchestrates the complete replication pipeline:
 
 Usage:
     python run_replication.py                  # Run full pipeline
-    python run_replication.py --stage train    # Run only training
-    python run_replication.py --skip-download  # Skip data download
-    python run_replication.py --gpu 0          # Use specific GPU
+    python run_replication.py train            # Run only training stages
+    python run_replication.py sobol            # Run only Sobol analysis
+    python run_replication.py --skip download  # Skip data download
+    python run_replication.py --gpu 0 train    # Train on specific GPU
+    python run_replication.py --dry-run full   # Show what would run
 
 Requirements:
     See pyproject.toml for full dependencies
