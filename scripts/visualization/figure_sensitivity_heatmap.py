@@ -2,11 +2,13 @@
 Figure 4: Sensitivity Analysis Dual Heatmap.
 
 Generates publication-quality two-panel figures showing:
-  (a) First-order Sobol indices (S1) across emission sectors
+  (a) Total-order Sobol indices (ST) across emission sectors
   (b) Spearman correlation importance across emission sectors
 
 This visualizes which input variables most strongly influence each sector's
-emission predictions, showing both magnitude (Sobol) and direction (Spearman).
+emission predictions. Total-order indices (ST) capture each variable's full
+contribution to output variance including all interaction effects, while
+Spearman correlations indicate the direction of influence.
 
 Variable Modes:
     - "full": Includes both input variables and context variables
@@ -187,7 +189,7 @@ def filter_context_variables(df: pd.DataFrame, include_context: bool) -> pd.Data
 
 
 def select_variables_top_per_sector(pivot: pd.DataFrame, top_n: int) -> set:
-    """Select top N variables per sector."""
+    """Select top N variables per sector based on total-order Sobol index (ST)."""
     selected = set()
     for sector in pivot.columns:
         top_in_sector = pivot[sector].sort_values(ascending=False).head(top_n).index
@@ -216,6 +218,9 @@ def create_dual_heatmap(mode: VariableMode = "full"):
     """
     Generate publication-quality dual sensitivity heatmap for a given mode.
 
+    Panel (a) shows total-order Sobol indices (ST) and panel (b) shows
+    signed Spearman correlation importance.
+
     Args:
         mode: Variable mode - "full" or "inputonly"
     """
@@ -226,8 +231,8 @@ def create_dual_heatmap(mode: VariableMode = "full"):
     print("=" * 70)
 
     # Construct file paths based on mode
-    sobol_csv = SENSITIVITY_DIR / f"sobol_results_{mode}_final.csv"
-    spearman_csv = SENSITIVITY_DIR / f"perturbation_results_{mode}_final.csv"
+    sobol_csv = SENSITIVITY_DIR / f"sobol_results_{mode}.csv"
+    spearman_csv = SENSITIVITY_DIR / f"perturbation_results_{mode}.csv"
 
     # Load Sobol data
     if not sobol_csv.exists():
@@ -238,11 +243,11 @@ def create_dual_heatmap(mode: VariableMode = "full"):
     df_sobol = pd.read_csv(sobol_csv)
     df_sobol["var_clean"] = df_sobol["var"].map(NAME_MAP).fillna(df_sobol["var"])
 
-    pivot_s1 = df_sobol.pivot(index="var_clean", columns="sector", values="S1")
-    pivot_conf = df_sobol.pivot(index="var_clean", columns="sector", values="S1_conf")
+    pivot_st = df_sobol.pivot(index="var_clean", columns="sector", values="ST")
+    pivot_conf = df_sobol.pivot(index="var_clean", columns="sector", values="ST_conf")
 
-    available_sectors_sobol = [s for s in SECTOR_ORDER if s in pivot_s1.columns]
-    pivot_s1 = pivot_s1[available_sectors_sobol]
+    available_sectors_sobol = [s for s in SECTOR_ORDER if s in pivot_st.columns]
+    pivot_st = pivot_st[available_sectors_sobol]
     pivot_conf = pivot_conf[available_sectors_sobol]
 
     # Load Spearman data
@@ -272,10 +277,10 @@ def create_dual_heatmap(mode: VariableMode = "full"):
     pivot_spearman = pivot_spearman[available_sectors_spearman]
     pivot_spearman_abs = pivot_spearman_abs[available_sectors_spearman]
 
-    # Variable selection
-    print("\nSelecting variables...")
-    selected_vars = select_variables_top_per_sector(pivot_s1, TOP_N_PER_SECTOR)
-    common_vars = set(pivot_s1.index) & set(pivot_spearman.index)
+    # Variable selection based on ST
+    print("\nSelecting variables (by total-order Sobol index ST)...")
+    selected_vars = select_variables_top_per_sector(pivot_st, TOP_N_PER_SECTOR)
+    common_vars = set(pivot_st.index) & set(pivot_spearman.index)
     selected_vars = selected_vars & common_vars
     selected_vars_sorted = sort_variables_by_category(list(selected_vars))
     n_vars = len(selected_vars_sorted)
@@ -286,7 +291,7 @@ def create_dual_heatmap(mode: VariableMode = "full"):
         print(f"  {i + 1:2d}. {v} ({cat})")
 
     # Filter pivots
-    pivot_s1 = pivot_s1.loc[selected_vars_sorted]
+    pivot_st = pivot_st.loc[selected_vars_sorted]
     pivot_conf = pivot_conf.loc[selected_vars_sorted]
     pivot_spearman = pivot_spearman.loc[selected_vars_sorted]
 
@@ -327,7 +332,7 @@ def create_dual_heatmap(mode: VariableMode = "full"):
     ax_title_a.text(
         0.06,
         0.50,
-        "Sobol sensitivity (S1)",
+        "Sobol sensitivity (ST)",
         fontsize=9,
         transform=ax_title_a.transAxes,
         va="bottom",
@@ -385,8 +390,8 @@ def create_dual_heatmap(mode: VariableMode = "full"):
         "diverging", colors_diverging, N=256
     )
 
-    # Panel A: Sobol heatmap
-    data_sobol = pivot_s1.values
+    # Panel A: Sobol ST heatmap
+    data_sobol = pivot_st.values
     n_sectors = len(available_sectors_sobol)
 
     im_sobol = ax_sobol.imshow(
@@ -490,7 +495,7 @@ def create_dual_heatmap(mode: VariableMode = "full"):
 
     # Colorbars
     cbar_sobol = plt.colorbar(im_sobol, cax=ax_cbar_sobol, orientation="horizontal")
-    cbar_sobol.set_label("First-order Sobol index (S1)", fontsize=6.5, labelpad=3)
+    cbar_sobol.set_label("Total-order Sobol index (ST)", fontsize=6.5, labelpad=3)
     cbar_sobol.ax.tick_params(labelsize=6, length=2, width=0.4, pad=1)
     cbar_sobol.ax.xaxis.set_ticks_position("top")
     cbar_sobol.ax.xaxis.set_label_position("top")

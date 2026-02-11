@@ -1,14 +1,10 @@
 """
-Iterative Sobol sensitivity analysis for emission predictions.
+Sobol sensitivity analysis for emission predictions.
 
 This script performs variance-based global sensitivity analysis using Sobol indices
 to identify which input variables most strongly influence sectoral emission predictions.
-The analysis iteratively prunes low-importance variables to focus on key drivers.
-
-Workflow:
-    1. Run Sobol analysis with all candidate variables (grouped by base name)
-    2. Prune variables whose first-order index (S1) < threshold across all outputs
-    3. Repeat until no more variables drop or max iterations reached
+Total-order Sobol indices (ST) are used to capture each variable's full contribution
+to output variance, including all interaction effects with other variables.
 
 The script supports both EU-wide aggregated analysis and single-country analysis,
 with options to analyze either emission predictions or model uncertainty.
@@ -22,8 +18,7 @@ Usage:
 
 Outputs:
     For each mode (full/inputonly):
-    - data/sensitivity/sobol_results_{mode}_iter{N}.csv for each iteration
-    - data/sensitivity/sobol_results_{mode}_final.csv for final results
+    - data/sensitivity/sobol_results_{mode}.csv
 
 Reference:
     Section 4 "Methods" discusses sensitivity analysis methodology.
@@ -122,10 +117,6 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Emission sectors
 SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Power"]
 
-# Iterative pruning parameters
-PRUNE_THRESHOLD = 0.01  # Drop variables with max S1 < 1%
-MAX_ITERATIONS = 5
-
 
 # =============================================================================
 # Utility Functions
@@ -211,37 +202,6 @@ def build_grouped_var_specs(
             seen[base]["indices"].append(idx)
 
     return var_specs
-
-
-def prune_variables(
-    problem: dict,
-    sobol_results: dict,
-    threshold: float = 0.01,
-) -> tuple[list[str], list[str]]:
-    """
-    Identify variables to keep/drop based on Sobol indices.
-
-    Args:
-        problem: SALib problem definition
-        sobol_results: Dictionary of Sobol results per sector
-        threshold: Minimum S1 value to keep a variable
-
-    Returns:
-        Tuple of (kept_variable_names, dropped_variable_names)
-    """
-    # Track maximum S1 across all sectors for each variable
-    var_importance = {name: 0.0 for name in problem["names"]}
-
-    for _sector, Si in sobol_results.items():
-        for j, name in enumerate(problem["names"]):
-            s1_val = abs(Si["S1"][j])
-            if s1_val > var_importance[name]:
-                var_importance[name] = s1_val
-
-    kept = [name for name, imp in var_importance.items() if imp >= threshold]
-    dropped = [name for name, imp in var_importance.items() if imp < threshold]
-
-    return kept, dropped
 
 
 # =============================================================================
@@ -344,24 +304,25 @@ def load_models(dataset):
 # =============================================================================
 
 
-def run_sobol_once(
+def run_sobol(
     var_specs: list[dict],
-    iteration: int | str,
     mode: VariableMode = "full",
 ) -> tuple[dict, dict]:
     """
-    Run a single iteration of Sobol sensitivity analysis.
+    Run Sobol sensitivity analysis for all sectors.
+
+    Computes total-order Sobol indices (ST) to quantify each variable's
+    contribution to output variance, including all interaction effects.
 
     Args:
         var_specs: List of variable specifications to analyze
-        iteration: Iteration number or label (e.g., 'final')
         mode: Variable mode - "full" or "inputonly"
 
     Returns:
         Tuple of (problem_dict, sobol_results_dict)
     """
-    # Output filename includes mode
-    output_template = f"sobol_results_{mode}_iter{{}}.csv"
+    output_file = f"sobol_results_{mode}.csv"
+
     # Set random seeds for reproducibility
     random.seed(0)
     np.random.seed(0)
@@ -534,7 +495,7 @@ def run_sobol_once(
     # Analyze results and save
     sobol_results = {}
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_csv = OUTPUT_DIR / output_template.format(iteration)
+    out_csv = OUTPUT_DIR / output_file
 
     with open(out_csv, "w", newline="") as outf:
         writer = csv.writer(outf)
@@ -559,42 +520,8 @@ def run_sobol_once(
                     ]
                 )
 
-    print(f"Iteration {iteration} ({mode}): results written to {out_csv}")
+    print(f"Results ({mode}) written to {out_csv}")
     return problem, sobol_results
-
-
-def run_iterative_sobol(
-    var_specs: list[dict],
-    mode: VariableMode = "full",
-    max_iter: int = 5,
-    threshold: float = 0.01,
-) -> None:
-    """
-    Run iterative Sobol analysis with variable pruning.
-
-    Args:
-        var_specs: Initial list of variable specifications
-        mode: Variable mode - "full" or "inputonly"
-        max_iter: Maximum number of pruning iterations
-        threshold: Minimum S1 to keep a variable
-    """
-    output_template = f"sobol_results_{mode}_iter{{}}.csv"
-
-    for it in range(1, max_iter + 1):
-        problem, sobol_results = run_sobol_once(var_specs, it, mode)
-        kept, dropped = prune_variables(problem, sobol_results, threshold)
-
-        print(f"Iteration {it} ({mode}): dropped {len(dropped)} vars, kept {len(kept)}")
-
-        if not dropped:
-            print("No variables dropped - convergence reached")
-            break
-
-        var_specs = [s for s in var_specs if s["name"] in kept]
-
-    # Run final analysis
-    run_sobol_once(var_specs, "final", mode)
-    print(f"Final results written to {OUTPUT_DIR / output_template.format('final')}")
 
 
 # =============================================================================
@@ -609,6 +536,7 @@ def main():
     print("=" * 70)
     print(f"Mode: {'EU27 aggregate' if EU_MODE else f'Single country ({TARGET_GEO})'}")
     print(f"Analyzing: {'Uncertainty' if ANALYZE_UNCERTAINTY else 'Emissions'}")
+    print(f"Sensitivity index: Total-order (ST)")
     print(f"Base samples: {N_BASE}")
     print(f"Perturbation: ±{PERTURBATION_FRACTION * 100:.0f}%")
     print(f"Variable modes to run: {RUN_MODES}")
@@ -632,10 +560,8 @@ def main():
         if mode == "inputonly":
             print("(Context variables excluded)")
 
-        # Run iterative analysis
-        run_iterative_sobol(
-            var_specs, mode=mode, max_iter=MAX_ITERATIONS, threshold=PRUNE_THRESHOLD
-        )
+        # Run analysis
+        run_sobol(var_specs, mode=mode)
 
     print("\n" + "=" * 70)
     print("Sobol analysis complete for all modes!")
@@ -656,9 +582,7 @@ def run_single_mode(mode: VariableMode) -> None:
     var_specs = build_grouped_var_specs(input_names, context_names, mode=mode)
     print(f"Running Sobol analysis ({mode}): {len(var_specs)} variable groups")
 
-    run_iterative_sobol(
-        var_specs, mode=mode, max_iter=MAX_ITERATIONS, threshold=PRUNE_THRESHOLD
-    )
+    run_sobol(var_specs, mode=mode)
 
 
 if __name__ == "__main__":
