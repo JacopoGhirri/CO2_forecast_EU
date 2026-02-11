@@ -150,6 +150,7 @@ class DatasetUnified(Dataset):
         self.with_cuda = with_cuda
         self.scaling_type = scaling_type
         self.precomputed_scaling_params = precomputed_scaling_params or {}
+        self._use_precomputed = bool(precomputed_scaling_params)
 
         # Load and process emission data
         emi_df = self._load_emissions(path_csvs, output_configs, select_geo)
@@ -440,7 +441,7 @@ class DatasetUnified(Dataset):
         Returns:
             Scaled DataFrame.
         """
-        use_precomputed = bool(self.precomputed_scaling_params)
+        use_precomputed = self._use_precomputed
         cols_to_scale = [c for c in df.columns if c not in exclude_cols]
 
         for col in cols_to_scale[:]:  # Copy to allow modification

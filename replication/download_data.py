@@ -448,8 +448,8 @@ Examples:
     print(f"  Failed: {stats['failed']}")
 
     if stats["skipped_no_id"] > 0:
-        print(f"\n⚠ {stats['skipped_no_id']} files have placeholder Google Drive IDs.")
-        print("Edit data_manifest.yaml to add the actual file IDs.")
+        print(f"\n⚠ {stats['skipped_no_id']} files have placeholder or invalid Google Drive IDs.")
+        print("Contact repository owner for a valid ID.")
 
     if stats["failed"] > 0:
         print(f"\n✗ {stats['failed']} downloads failed.")

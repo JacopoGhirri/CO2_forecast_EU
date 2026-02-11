@@ -171,7 +171,7 @@ external_comparisons:
     source: "European Environment Agency"
     
   - path: data/external/pypsa_projections.csv
-    gdrive_id: "1gQLPezhD5DT2VMmtXcMkCkIlT46Dody-"
+    gdrive_id: "1YTQwdaxZtUgKRY-59vpC4dmD9OmYLRa4"
     description: "PyPSA-Eur model projections"
     source: "PyPSA-Eur project"
 
