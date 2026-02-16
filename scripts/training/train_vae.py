@@ -45,13 +45,12 @@ from scripts.utils import (
     save_dataset,
 )
 
+# ---------------------------------------------------------------------------
 # Reproducibility
+# ---------------------------------------------------------------------------
 SEED = 0
 random.seed(SEED)
-np.random.seed(SEED)
 torch.manual_seed(SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(SEED)
 
 
 def main():
@@ -151,7 +150,7 @@ def main():
         full_dataset = DatasetUnified(
             path_csvs="data/full_timeseries/",
             output_configs=output_configs,
-            select_years=np.arange(2010, 2024),
+            select_years=np.arange(2010, 2023 + 1),
             select_geo=eu27_countries,
             nested_variables=nested_variables,
             with_cuda=True,
@@ -161,10 +160,8 @@ def main():
         print(f"Dataset saved to {dataset_path}")
 
     # Train/validation split
-    train_size = int(0.85 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(
-        full_dataset, [train_size, val_size]
+        full_dataset, [0.85, 0.15]
     )
 
     train_loader = DataLoader(
@@ -241,8 +238,8 @@ def main():
     print(f"  Optimizer: {optimizer_name}, LR: {learning_rate}")
     print(f"  Loss weights: reconstruction={weight_recon}, KL={weight_kl}")
 
-    best_val_loss = float("inf")
-    best_recon_loss = float("inf")
+    best_val_loss = None
+    best_recon_loss = None
     best_weights = None
 
     # Smoothed validation loss for model selection
@@ -289,6 +286,14 @@ def main():
         train_kl /= n_batches
         train_mean_latent /= n_batches
 
+        # Logging (training) — every 250 epochs
+        if epoch % 250 == 0:
+            print(
+                f"\n--- Epoch {epoch} ---\n"
+                f"  Train: loss={train_loss:.4f}, recon={train_recon:.4f}, "
+                f"KL={train_kl:.4f}, mean_latent={train_mean_latent:.4f}"
+            )
+
         # ----------------------------------------------------------------------
         # Validation
         # ----------------------------------------------------------------------
@@ -323,27 +328,20 @@ def main():
         # ----------------------------------------------------------------------
         # Model Selection
         # ----------------------------------------------------------------------
-        if val_loss < best_val_loss:
+        if not (best_val_loss and best_val_loss < val_loss):
             best_val_loss = val_loss
 
-        if val_recon_smooth < best_recon_loss:
+        if not (best_recon_loss and best_recon_loss < val_recon_smooth):
             best_recon_loss = val_recon_smooth
             best_weights = model.state_dict()
 
-        # ----------------------------------------------------------------------
-        # Logging
-        # ----------------------------------------------------------------------
-        if epoch % 250 == 0 or epoch == num_epochs - 1:
-            print(f"\n--- Epoch {epoch} ---")
+        # Logging (validation) — every 250 epochs
+        if epoch % 250 == 0:
             print(
-                f"  Train: loss={train_loss:.4f}, recon={train_recon:.4f}, "
-                f"KL={train_kl:.4f}, mean_latent={train_mean_latent:.4f}"
+                f"  Val:   loss={val_loss:.4f}, recon={val_recon:.4f}, KL={val_kl:.4f}\n"
+                f"  Val (smoothed): recon={val_recon_smooth:.4f}\n"
+                f"  Best: loss={best_val_loss:.4f}, recon={best_recon_loss:.4f}"
             )
-            print(
-                f"  Val:   loss={val_loss:.4f}, recon={val_recon:.4f}, KL={val_kl:.4f}"
-            )
-            print(f"  Val (smoothed): recon={val_recon_smooth:.4f}")
-            print(f"  Best: loss={best_val_loss:.4f}, recon={best_recon_loss:.4f}")
 
     # ==========================================================================
     # Save Best Model

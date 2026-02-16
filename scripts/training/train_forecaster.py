@@ -27,7 +27,6 @@ import multiprocessing as mp
 # Set multiprocessing start method before other imports
 mp.set_start_method("spawn", force=True)
 
-import random
 from collections import deque
 from pathlib import Path
 
@@ -48,20 +47,9 @@ from scripts.elements.models import (
 from scripts.utils import (
     check_nan_gradients,
     count_parameters,
-    freeze_module,
     init_weights,
     load_config,
-    load_dataset,
-    save_dataset,
 )
-
-# Reproducibility
-SEED = 0
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(SEED)
 
 
 def main():
@@ -84,7 +72,7 @@ def main():
 
     # Training hyperparameters
     batch_size = 128
-    num_epochs = 5000
+    num_epochs = 5001
     scaling_type = "normalization"
 
     # VAE architecture (must match trained model)
@@ -110,7 +98,6 @@ def main():
     optimizer_name = forecast_config.forecast_optimizer
 
     # Paths
-    dataset_path = Path("data/pytorch_datasets/unified_dataset.pkl")
     vae_model_path = Path("data/pytorch_models/vae_model.pth")
     forecaster_model_path = Path("data/pytorch_models/forecaster_model.pth")
     variable_file = Path("config/data/variable_selection.txt")
@@ -157,32 +144,23 @@ def main():
         "SE",
     ]
 
-    # Load or create base dataset
-    if dataset_path.exists():
-        print(f"Loading cached dataset from {dataset_path}")
-        base_dataset = load_dataset(dataset_path)
-    else:
-        print("Creating new dataset...")
-        base_dataset = DatasetUnified(
-            path_csvs="data/full_timeseries/",
-            output_configs=output_configs,
-            select_years=np.arange(2010, 2024),
-            select_geo=eu27_countries,
-            nested_variables=nested_variables,
-            with_cuda=True,
-            scaling_type=scaling_type,
-        )
-        save_dataset(base_dataset, dataset_path)
-        print(f"Dataset saved to {dataset_path}")
+    print("Creating dataset...")
+    base_dataset = DatasetUnified(
+        path_csvs="data/full_timeseries/",
+        output_configs=output_configs,
+        select_years=np.arange(2010, 2023 + 1),
+        select_geo=eu27_countries,
+        nested_variables=nested_variables,
+        with_cuda=True,
+        scaling_type=scaling_type,
+    )
 
     # Wrap in forecasting dataset (provides 3 time steps: t, t-1, t-2)
     full_dataset = DatasetForecasting(base_dataset)
 
     # Train/validation split
-    train_size = int(0.85 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(
-        full_dataset, [train_size, val_size]
+        full_dataset, [0.85, 0.15]
     )
 
     train_loader = DataLoader(
@@ -192,7 +170,8 @@ def main():
         val_dataset, batch_size=batch_size, shuffle=False, drop_last=False
     )
 
-    print(f"Dataset loaded: {full_dataset.base_length} unique samples (5x inflated)")
+    print("Data setup done")
+    print(f"  Dataset: {full_dataset.base_length} unique samples (5x inflated)")
     print(f"  Train: {len(train_dataset)}, Validation: {len(val_dataset)}")
 
     # ==========================================================================
@@ -257,9 +236,11 @@ def main():
     # Optimizer Setup
     # ==========================================================================
 
-    # Freeze VAE weights - only train the forecaster
-    freeze_module(full_model.encoder)
-    freeze_module(full_model.vae)
+    # Freeze VAE weights via requires_grad
+    for p in full_model.encoder.parameters():
+        p.requires_grad = False
+    for p in full_model.vae.parameters():
+        p.requires_grad = False
 
     print("VAE weights frozen for forecaster training")
 
@@ -273,8 +254,7 @@ def main():
         raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
     optimizer = optimizer_cls(
-        full_model.forecaster.parameters(),
-        lr=learning_rate,
+        [{"params": full_model.forecaster.parameters(), "lr": learning_rate}],
         weight_decay=weight_decay,
         eps=1e-6,
     )
@@ -290,7 +270,6 @@ def main():
     best_val_loss_smooth = None
     best_val_acc = None
     best_val_acc_smooth = None
-    best_weights = None
 
     val_loss_history = deque(maxlen=50)
     val_acc_history = deque(maxlen=50)
@@ -315,8 +294,6 @@ def main():
             optimizer.zero_grad()
 
             # Forward pass: predict z_t from [z_{t-1}, z_{t-2}, c_t, c_{t-1}]
-            # The model takes (x_{t-1}, x_{t-2}, c_t, c_{t-1}) and internally
-            # encodes x to z before forecasting
             forecasted_latent = full_model(
                 input_prev, input_past, context_current, context_prev
             )
@@ -325,8 +302,6 @@ def main():
             mean_target, log_var_target = full_model.encoder(input_current)
 
             # Loss: uncertainty-aware MAE
-            # The target is the mean of the latent distribution
-            # Uncertainty is provided by the latent variance (from encoder)
             loss = uncertainty_aware_mae_loss(
                 mean_target,
                 forecasted_latent,
@@ -334,7 +309,7 @@ def main():
                 mode="regular",
             )
 
-            # Backward pass
+            # Backward pass — NaN check before clip
             loss.backward()
             check_nan_gradients(full_model)
             torch.nn.utils.clip_grad_norm_(full_model.parameters(), max_norm=1.0)
@@ -380,11 +355,11 @@ def main():
                 val_loss += loss.item()
 
                 # Accuracy: MSE between forecasted and target latent means
-                val_accuracy += (mean_target - forecasted_latent).pow(2).mean().item()
+                val_accuracy += (mean_target - forecasted_latent).pow(2).mean()
 
         n_val = len(val_loader)
         val_loss /= n_val
-        val_accuracy /= n_val
+        val_accuracy = val_accuracy / n_val
 
         # Smoothed metrics
         val_loss_history.append(val_loss)
@@ -394,50 +369,46 @@ def main():
         val_acc_smooth = sum(val_acc_history) / len(val_acc_history)
 
         # ----------------------------------------------------------------------
-        # Model Selection
+        # Model Selection — save on best smoothed validation accuracy
         # ----------------------------------------------------------------------
-        if best_val_loss is None or val_loss < best_val_loss:
+        if not best_val_loss or best_val_loss > val_loss:
             best_val_loss = val_loss
 
-        if best_val_loss_smooth is None or val_loss_smooth < best_val_loss_smooth:
+        if not best_val_loss_smooth or best_val_loss_smooth > val_loss_smooth:
             best_val_loss_smooth = val_loss_smooth
 
-        if best_val_acc is None or val_accuracy < best_val_acc:
+        if not best_val_acc or best_val_acc > val_accuracy:
             best_val_acc = val_accuracy
 
-        # Select best model based on smoothed accuracy
-        if best_val_acc_smooth is None or val_acc_smooth < best_val_acc_smooth:
+        if not best_val_acc_smooth or best_val_acc_smooth > val_acc_smooth:
             best_val_acc_smooth = val_acc_smooth
-            best_weights = full_model.state_dict()
+            torch.save(full_model.state_dict(), forecaster_model_path)
 
         # ----------------------------------------------------------------------
-        # Logging
+        # Logging — every 250 epochs
         # ----------------------------------------------------------------------
-        if epoch % 250 == 0 or epoch == num_epochs - 1:
-            print(f"\n--- Epoch {epoch} ---")
-            print(f"  Train loss: {train_loss:.4f}")
-            print(f"  Val loss: {val_loss:.4f} (smooth: {val_loss_smooth:.4f})")
+        if epoch % 250 == 0:
             print(
-                f"  Val MSE (latent): {val_accuracy:.4f} (smooth: {val_acc_smooth:.4f})"
-            )
-            print(
-                f"  Best: loss={best_val_loss:.4f}, smooth_loss={best_val_loss_smooth:.4f}"
-            )
-            print(
-                f"  Best: acc={best_val_acc:.4f}, smooth_acc={best_val_acc_smooth:.4f}"
+                {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "pred_val_loss": val_loss,
+                    "pred_val_accuracy": val_accuracy,
+                    "pred_val_loss_smooth": val_loss_smooth,
+                    "pred_val_acc_smooth": val_acc_smooth,
+                    "pred_best_val_loss": best_val_loss,
+                    "pred_best_val_loss_smooth": best_val_loss_smooth,
+                    "pred_best_val_acc": best_val_acc,
+                    "pred_best_val_acc_smooth": best_val_acc_smooth,
+                }
             )
 
     # ==========================================================================
-    # Save Best Model
+    # Done
     # ==========================================================================
 
-    if best_weights is not None:
-        torch.save(best_weights, forecaster_model_path)
-        print(f"\nBest model saved to {forecaster_model_path}")
-        print(f"  Best validation accuracy (smooth): {best_val_acc_smooth:.4f}")
-    else:
-        print("\nWarning: No best weights saved")
-
+    print(f"\nBest model saved to {forecaster_model_path}")
+    print(f"  Best validation accuracy (smooth): {best_val_acc_smooth:.4f}")
     print("\nLatent forecaster training complete!")
 
 

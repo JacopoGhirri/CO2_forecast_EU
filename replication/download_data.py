@@ -448,7 +448,9 @@ Examples:
     print(f"  Failed: {stats['failed']}")
 
     if stats["skipped_no_id"] > 0:
-        print(f"\n⚠ {stats['skipped_no_id']} files have placeholder or invalid Google Drive IDs.")
+        print(
+            f"\n⚠ {stats['skipped_no_id']} files have placeholder or invalid Google Drive IDs."
+        )
         print("Contact repository owner for a valid ID.")
 
     if stats["failed"] > 0:

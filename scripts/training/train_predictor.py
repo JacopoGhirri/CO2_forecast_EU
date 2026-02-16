@@ -40,30 +40,29 @@ from config.data.output_configs import output_configs
 from scripts.elements.datasets import DatasetPrediction
 from scripts.elements.models import (
     Decoder,
-    Encoder,
     EmissionPredictor,
+    Encoder,
     FullPredictionModel,
     VAEModel,
-    vae_loss,
     uncertainty_aware_mse_loss,
+    vae_loss,
 )
 from scripts.utils import (
     check_nan_gradients,
+    count_parameters,
     init_weights,
     load_config,
     load_dataset,
     save_dataset,
-    count_parameters,
-    freeze_module,
 )
 
+# ---------------------------------------------------------------------------
 # Reproducibility
-SEED = 42
+# ---------------------------------------------------------------------------
+SEED = 0
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(SEED)
 
 
 def main():
@@ -123,14 +122,38 @@ def main():
     # ==========================================================================
 
     # Load variable selection
-    with open(variable_file, "r") as f:
+    with open(variable_file) as f:
         nested_variables = [line.strip() for line in f if line.strip()]
 
     # Countries to include (EU27)
     eu27_countries = [
-        "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI", "FR", "DE",
-        "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK",
-        "SI", "ES", "SE",
+        "AT",
+        "BE",
+        "BG",
+        "HR",
+        "CY",
+        "CZ",
+        "DK",
+        "EE",
+        "EL",
+        "FI",
+        "FR",
+        "DE",
+        "HU",
+        "IE",
+        "IT",
+        "LV",
+        "LT",
+        "LU",
+        "MT",
+        "NL",
+        "PL",
+        "PT",
+        "RO",
+        "SK",
+        "SI",
+        "ES",
+        "SE",
     ]
 
     # Load or create dataset
@@ -142,7 +165,7 @@ def main():
         full_dataset = DatasetPrediction(
             path_csvs="data/full_timeseries/",
             output_configs=output_configs,
-            select_years=np.arange(2010, 2024),
+            select_years=np.arange(2010, 2023 + 1),
             select_geo=eu27_countries,
             nested_variables=nested_variables,
             with_cuda=True,
@@ -152,10 +175,8 @@ def main():
         print(f"Dataset saved to {dataset_path}")
 
     # Train/validation split
-    train_size = int(0.85 * len(full_dataset))
-    val_size = len(full_dataset) - train_size
     train_dataset, val_dataset = torch.utils.data.random_split(
-        full_dataset, [train_size, val_size]
+        full_dataset, [0.85, 0.15]
     )
 
     train_loader = DataLoader(
@@ -231,9 +252,11 @@ def main():
     # Optimizer Setup
     # ==========================================================================
 
-    # Freeze VAE weights - only train the predictor
-    freeze_module(full_model.encoder)
-    freeze_module(full_model.decoder)
+    # Freeze VAE weights via requires_grad
+    for p in full_model.encoder.parameters():
+        p.requires_grad = False
+    for p in full_model.decoder.parameters():
+        p.requires_grad = False
 
     print("VAE weights frozen for predictor training")
 
@@ -246,7 +269,8 @@ def main():
     if optimizer_cls is None:
         raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
-    # Different learning rates: lower for VAE (if unfrozen), higher for predictor
+    # Different learning rates: lower for VAE (frozen but still in param groups),
+    # higher for predictor
     optimizer = optimizer_cls(
         [
             {"params": full_model.encoder.parameters(), "lr": learning_rate * 1e-3},
@@ -269,7 +293,6 @@ def main():
     best_val_loss_smooth = None
     best_val_acc = None
     best_val_acc_smooth = None
-    best_weights = None
 
     val_loss_history = deque(maxlen=50)
     val_acc_history = deque(maxlen=50)
@@ -294,8 +317,6 @@ def main():
             optimizer.zero_grad()
 
             # Forward pass through combined model
-            # NOTE: emissions_prev is NOT passed to the model - it's only used
-            # to compute the ground truth delta in the training loop
             (
                 emission_delta_pred,
                 emission_uncertainty,
@@ -318,7 +339,7 @@ def main():
                 mode=loss_mode,
             )
 
-            # Backward pass
+            # Backward pass — NaN check before clip
             loss.backward()
             check_nan_gradients(full_model)
             torch.nn.utils.clip_grad_norm_(full_model.parameters(), max_norm=1.0)
@@ -374,8 +395,12 @@ def main():
                 val_uncertainty += emission_uncertainty.mean().item()
 
                 # Accuracy: MSE of predicted vs actual emissions (not deltas)
-                emissions_pred = emission_delta_pred + emissions_prev
-                val_accuracy += (emissions_pred - emissions).pow(2).mean().item()
+                val_accuracy += (
+                    (emission_delta_pred + emissions_prev - emissions)
+                    .pow(2)
+                    .mean()
+                    .item()
+                )
 
                 # Reconstruction loss (monitor VAE health)
                 recon_loss, _ = vae_loss(
@@ -397,46 +422,49 @@ def main():
         val_acc_smooth = sum(val_acc_history) / len(val_acc_history)
 
         # ----------------------------------------------------------------------
-        # Model Selection
-        # ----------------------------------------------------------------------
-        if best_val_loss is None or val_loss < best_val_loss:
-            best_val_loss = val_loss
-
-        if best_val_loss_smooth is None or val_loss_smooth < best_val_loss_smooth:
-            best_val_loss_smooth = val_loss_smooth
-            best_weights = full_model.state_dict()
-
-        if best_val_acc is None or val_accuracy < best_val_acc:
-            best_val_acc = val_accuracy
-
-        if best_val_acc_smooth is None or val_acc_smooth < best_val_acc_smooth:
-            best_val_acc_smooth = val_acc_smooth
-
-        # ----------------------------------------------------------------------
-        # Logging
+        # Logging — every 250 epochs
         # ----------------------------------------------------------------------
         if epoch % 250 == 0 or epoch == num_epochs - 1:
             print(f"\n--- Epoch {epoch} ---")
             print(f"  Train loss: {train_loss:.4f}")
             print(f"  Val loss: {val_loss:.4f} (smooth: {val_loss_smooth:.4f})")
             print(f"  Val uncertainty: {val_uncertainty:.4f}")
-            print(f"  Val MSE (emissions): {val_accuracy:.4f} (smooth: {val_acc_smooth:.4f})")
+            print(f"  Val MSE (emissions): {val_accuracy:.4f}")
             print(f"  Val VAE recon: {val_recon:.4f}")
-            print(f"  Best smooth loss: {best_val_loss_smooth:.4f}")
-            print(f"  Best smooth acc: {best_val_acc_smooth:.4f}")
+            if best_val_loss_smooth:
+                print(f"  Best smooth loss: {best_val_loss_smooth:.4f}")
+            if best_val_acc_smooth:
+                print(f"  Best smooth acc: {best_val_acc_smooth:.4f}")
+
+        # ----------------------------------------------------------------------
+        # Model Selection — save on best smoothed validation loss
+        # ----------------------------------------------------------------------
+        if not best_val_loss or best_val_loss > val_loss:
+            best_val_loss = val_loss
+
+        if not best_val_loss_smooth or best_val_loss_smooth > val_loss_smooth:
+            best_val_loss_smooth = val_loss_smooth
+            torch.save(full_model.state_dict(), predictor_model_path)
+
+        if not best_val_acc or best_val_acc > val_accuracy:
+            best_val_acc = val_accuracy
+
+        if not best_val_acc_smooth or best_val_acc_smooth > val_acc_smooth:
+            best_val_acc_smooth = val_acc_smooth
+
+        # Early stopping in case of unstable divergence
+        if val_accuracy > 5 and epoch > 50:
+            print(">>> High validation error — stopping early.")
+            break
 
     # ==========================================================================
-    # Save Best Model
+    # Done
     # ==========================================================================
 
-    if best_weights is not None:
-        torch.save(best_weights, predictor_model_path)
-        print(f"\nBest model saved to {predictor_model_path}")
-        print(f"  Best validation loss (smooth): {best_val_loss_smooth:.4f}")
+    print(f"\nBest model saved to {predictor_model_path}")
+    print(f"  Best validation loss (smooth): {best_val_loss_smooth:.4f}")
+    if best_val_acc_smooth:
         print(f"  Best validation MSE (smooth): {best_val_acc_smooth:.4f}")
-    else:
-        print("\nWarning: No best weights saved")
-
     print("\nEmission predictor training complete!")
 
 

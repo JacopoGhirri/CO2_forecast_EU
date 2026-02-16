@@ -536,7 +536,7 @@ def main():
     print("=" * 70)
     print(f"Mode: {'EU27 aggregate' if EU_MODE else f'Single country ({TARGET_GEO})'}")
     print(f"Analyzing: {'Uncertainty' if ANALYZE_UNCERTAINTY else 'Emissions'}")
-    print(f"Sensitivity index: Total-order (ST)")
+    print("Sensitivity index: Total-order (ST)")
     print(f"Base samples: {N_BASE}")
     print(f"Perturbation: ±{PERTURBATION_FRACTION * 100:.0f}%")
     print(f"Variable modes to run: {RUN_MODES}")

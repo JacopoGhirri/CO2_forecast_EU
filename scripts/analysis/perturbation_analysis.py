@@ -3,8 +3,7 @@ Perturbation-based sensitivity analysis for emission predictions.
 
 This script performs sensitivity analysis using random perturbations and
 Spearman correlation to identify which input variables most strongly
-influence sectoral emission predictions. This provides a complementary
-view to Sobol indices, showing both magnitude and direction of effects.
+influence sectoral emission predictions.
 
 Workflow:
     1. Group variables by base name (monthly/quarterly collapsed)
@@ -22,7 +21,7 @@ Usage:
 
 Outputs:
     For each mode (full/inputonly):
-    - data/sensitivity/perturbation_results_{mode}_iter{label}.csv
+    - data/sensitivity/perturbation_results_{mode}.csv
 
 Reference:
     Section 4 "Methods" discusses sensitivity analysis methodology.
@@ -214,7 +213,6 @@ def load_models(dataset):
     Returns:
         Tuple of (full_model, forecast_model, vae_model)
     """
-    # Import here to avoid circular imports
     from config.data.output_configs import output_configs
     from scripts.elements.models import (
         Decoder,
@@ -302,7 +300,6 @@ def load_models(dataset):
 def run_perturbation_analysis(
     var_specs: list[dict],
     mode: VariableMode = "full",
-    iteration_label: str = "final",
     n_samples: int = N_SAMPLES,
 ) -> tuple[dict, dict]:
     """
@@ -311,7 +308,6 @@ def run_perturbation_analysis(
     Args:
         var_specs: List of variable specifications to analyze
         mode: Variable mode - "full" or "inputonly"
-        iteration_label: Label for output file (e.g., 'final')
         n_samples: Number of perturbation samples
 
     Returns:
@@ -320,7 +316,7 @@ def run_perturbation_analysis(
     # Output filename includes mode
     output_template = f"perturbation_results_{mode}_iter{{}}.csv"
 
-    # Set random seeds for reproducibility
+    # Reproducibility
     random.seed(0)
     np.random.seed(0)
     torch.manual_seed(0)
@@ -329,18 +325,18 @@ def run_perturbation_analysis(
     dataset = load_dataset(DATASET_PATH)
     full_model, forecast_model, vae_model = load_models(dataset)
 
-    list(dataset.input_variable_names)
-    list(dataset.context_variable_names)
+    input_names = list(dataset.input_variable_names)
+    context_names = list(dataset.context_variable_names)
 
     # Import projection dataset
     from scripts.elements.datasets import DatasetProjections2030
 
     projection_dataset = DatasetProjections2030(dataset)
 
-    # Determine countries to analyze
+    # Determine countries
     countries = EU27_COUNTRIES if EU_MODE else [TARGET_GEO]
 
-    # Build baseline data for each country
+    # Build baseline data per country
     baseline_inputs = {}
     baseline_inputs_prev = {}
     baseline_ctx_prev = {}
@@ -368,7 +364,7 @@ def run_perturbation_analysis(
             prev_e if isinstance(prev_e, np.ndarray) else prev_e.cpu().numpy()
         )
 
-    # Build bounds for each variable group
+    # Build bounds per variable group
     var_names = []
     bounds = []
 
@@ -424,8 +420,23 @@ def run_perturbation_analysis(
     Y = np.zeros((n_runs, n_sectors), dtype=float)
 
     def run_sample_for_country(sample_vec: np.ndarray, geo: str) -> np.ndarray:
-        """Run model for a single sample and country."""
-        # Copy baselines
+        """
+        Run the full prediction pipeline for one perturbation sample and country.
+
+        Copies the baseline input/context arrays for the given country,
+        applies the perturbation values from ``sample_vec``, encodes to
+        latent space, forecasts the current-year latent, and predicts
+        absolute sectoral emissions.
+
+        Args:
+            sample_vec: 1-D array of length ``len(var_specs)`` with the
+                perturbed values for each variable group.
+            geo: Two-letter country code (e.g. ``"PL"``).
+
+        Returns:
+            1-D numpy array of shape ``(n_sectors,)`` with predicted
+            absolute emissions for each sector.
+        """
         in_cur = baseline_inputs[geo].copy()
         in_prev = baseline_inputs_prev[geo].copy()
         ctx_prev = baseline_ctx_prev[geo].copy()
@@ -441,7 +452,7 @@ def run_perturbation_analysis(
                 for ii in spec["indices"]:
                     ctx_cur[ii] = val
 
-        # Convert to tensors
+        # To tensors
         t_in_cur = torch.tensor(in_cur, dtype=torch.float32, device=DEVICE).unsqueeze(0)
         t_in_prev = torch.tensor(in_prev, dtype=torch.float32, device=DEVICE).unsqueeze(
             0
@@ -454,7 +465,7 @@ def run_perturbation_analysis(
         )
 
         with torch.no_grad():
-            # Encode inputs
+            # Encode — use encoder directly (returns mean, log_var)
             l_prev_mean, _ = full_model.encoder(t_in_cur)
             l_past_mean, _ = full_model.encoder(t_in_prev)
 
@@ -492,7 +503,7 @@ def run_perturbation_analysis(
     # Compute importance via Spearman correlation
     importance_results = {}
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_csv = OUTPUT_DIR / output_template.format(iteration_label)
+    out_csv = OUTPUT_DIR / output_template
 
     with open(out_csv, "w", newline="") as outf:
         writer = csv.writer(outf)
@@ -523,9 +534,7 @@ def run_perturbation_analysis(
                 zip(var_names, importances, strict=False)
             )
 
-    print(
-        f"Perturbation analysis '{iteration_label}' ({mode}): results written to {out_csv}"
-    )
+    print(f"Perturbation analysis ({mode}): results written to {out_csv}")
     return problem_like, importance_results
 
 
@@ -564,9 +573,7 @@ def main():
             print("(Context variables excluded)")
 
         # Run analysis
-        run_perturbation_analysis(
-            var_specs, mode=mode, iteration_label="final", n_samples=N_SAMPLES
-        )
+        run_perturbation_analysis(var_specs, mode=mode, n_samples=N_SAMPLES)
 
     print("\n" + "=" * 70)
     print("Perturbation analysis complete for all modes!")
@@ -578,7 +585,8 @@ def run_single_mode(mode: VariableMode) -> None:
     Run perturbation analysis for a single mode.
 
     Args:
-        mode: Variable mode - "full" or "inputonly"
+        mode: Variable mode — ``"full"`` includes both input and context
+            variables; ``"inputonly"`` excludes context variables.
     """
     dataset = load_dataset(DATASET_PATH)
     input_names = list(dataset.input_variable_names)
@@ -587,9 +595,7 @@ def run_single_mode(mode: VariableMode) -> None:
     var_specs = build_grouped_var_specs(input_names, context_names, mode=mode)
     print(f"Running perturbation analysis ({mode}): {len(var_specs)} variable groups")
 
-    run_perturbation_analysis(
-        var_specs, mode=mode, iteration_label="final", n_samples=N_SAMPLES
-    )
+    run_perturbation_analysis(var_specs, mode=mode, n_samples=N_SAMPLES)
 
 
 if __name__ == "__main__":
