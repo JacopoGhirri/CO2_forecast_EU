@@ -116,6 +116,13 @@ PIPELINE_STAGES = {
         "args": [],
         "module": True,
     },
+    "fig_latent": {
+        "script": "scripts.visualization.visualise_latent_space",
+        "description": "Generate supplementary latent space figures (UMAP + t-SNE)",
+        "args": [],
+        "module": True,
+        "gpu_required": True,
+    },
 }
 
 # Stage groups for convenience
@@ -125,7 +132,7 @@ STAGE_GROUPS = {
     "train": ["train_vae", "train_predictor", "train_forecaster"],
     "inference": ["inference"],
     "analysis": ["sobol", "perturbation"],
-    "figures": ["fig1", "fig2", "fig3", "fig4"],
+    "figures": ["fig1", "fig2", "fig3", "fig4", "fig_latent"],
     "full": [
         "download",
         "verify",
@@ -139,6 +146,7 @@ STAGE_GROUPS = {
         "fig2",
         "fig3",
         "fig4",
+        "fig_latent",
     ],
 }
 
@@ -376,7 +384,7 @@ Stage Groups:
     train      - train_vae, train_predictor, train_forecaster
     inference  - inference
     analysis   - sobol, perturbation
-    figures    - fig1, fig2, fig3, fig4
+    figures    - fig1, fig2, fig3, fig4, fig_latent
     full       - Complete pipeline in order
 
 Individual Stages:
@@ -392,12 +400,14 @@ Individual Stages:
     fig2            - Generate Figure 2
     fig3            - Generate Figure 3
     fig4            - Generate Figure 4
+    fig_latent      - Generate supplementary latent space figures (UMAP + t-SNE)
 
 Examples:
     python run_replication.py                      # Run full pipeline
     python run_replication.py train                # Run training stages only
     python run_replication.py figures              # Generate all figures
     python run_replication.py fig1 fig2            # Generate specific figures
+    python run_replication.py fig_latent           # Generate latent space figures only
     python run_replication.py --skip download      # Skip data download
     python run_replication.py --gpu 0 train        # Train on GPU 0
     python run_replication.py --dry-run full       # Show what would run
