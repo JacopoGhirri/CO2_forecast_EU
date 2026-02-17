@@ -251,9 +251,12 @@ def distance_correlation(X: np.ndarray, Y: np.ndarray) -> float:
     Captures both linear and non-linear association between two
     multivariate samples.  Returns 0 only under full independence.
     """
+
     def _centred(A: np.ndarray) -> np.ndarray:
         D = pairwise_distances(A)
-        return D - D.mean(axis=1, keepdims=True) - D.mean(axis=0, keepdims=True) + D.mean()
+        return (
+            D - D.mean(axis=1, keepdims=True) - D.mean(axis=0, keepdims=True) + D.mean()
+        )
 
     A, B = _centred(X), _centred(Y)
     dCov = np.sqrt(np.mean(A * B))
@@ -300,12 +303,21 @@ def _plot_panel(
         colour = COUNTRY_COLOURS.get(country, "#888888")
 
         ax.plot(
-            grp[x_col], grp[y_col],
-            color=colour, alpha=0.50, zorder=1, linewidth=0.6,
+            grp[x_col],
+            grp[y_col],
+            color=colour,
+            alpha=0.50,
+            zorder=1,
+            linewidth=0.6,
         )
         ax.scatter(
-            grp[x_col], grp[y_col],
-            color=colour, s=4, alpha=0.75, zorder=2, linewidths=0,
+            grp[x_col],
+            grp[y_col],
+            color=colour,
+            s=4,
+            alpha=0.75,
+            zorder=2,
+            linewidths=0,
         )
 
     # --- Flag overlays at earliest year ---
@@ -369,18 +381,22 @@ def _generate_figure(
         proj_latent = compute_reduction(latent_means, method=method, n_neighbors=50)
     else:
         proj_latent = compute_reduction(
-            latent_means, method=method, early_exaggeration=24,
+            latent_means,
+            method=method,
+            early_exaggeration=24,
         )
 
     # --- Assemble DataFrame -----------------------------------------------
-    df = pd.DataFrame({
-        "Country": keys.iloc[:, 0].values,
-        "Year": keys.iloc[:, 1].astype(int).values,
-        "input_1": proj_input[:, 0],
-        "input_2": proj_input[:, 1],
-        "latent_1": proj_latent[:, 0],
-        "latent_2": proj_latent[:, 1],
-    })
+    df = pd.DataFrame(
+        {
+            "Country": keys.iloc[:, 0].values,
+            "Year": keys.iloc[:, 1].astype(int).values,
+            "input_1": proj_input[:, 0],
+            "input_2": proj_input[:, 1],
+            "latent_1": proj_latent[:, 0],
+            "latent_2": proj_latent[:, 1],
+        }
+    )
 
     # --- Figure — two-panel, Nature two-column width (180 mm ≈ 7.09 in) --
     fig_width_in = 7.09
@@ -388,24 +404,34 @@ def _generate_figure(
     fig, axes = plt.subplots(1, 2, figsize=(fig_width_in, fig_height_in))
 
     _plot_panel(
-        axes[0], df, "input_1", "input_2",
+        axes[0],
+        df,
+        "input_1",
+        "input_2",
         title=f"{method_label} of Original Input Space",
         method_label=method_label,
         show_flags=show_flags,
     )
     _plot_panel(
-        axes[1], df, "latent_1", "latent_2",
+        axes[1],
+        df,
+        "latent_1",
+        "latent_2",
         title=f"{method_label} of VAE Latent Space",
         method_label=method_label,
         show_flags=show_flags,
     )
 
-    for ax, label in zip(axes, ["a", "b"]):
+    for ax, label in zip(axes, ["a", "b"], strict=False):
         ax.text(
-            -0.02, 1.05, f"({label})",
+            -0.02,
+            1.05,
+            f"({label})",
             transform=ax.transAxes,
-            fontsize=9, fontweight="bold",
-            va="bottom", ha="right",
+            fontsize=9,
+            fontweight="bold",
+            va="bottom",
+            ha="right",
         )
 
     plt.subplots_adjust(wspace=0.25)

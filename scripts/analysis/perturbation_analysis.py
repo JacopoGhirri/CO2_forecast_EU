@@ -325,8 +325,8 @@ def run_perturbation_analysis(
     dataset = load_dataset(DATASET_PATH)
     full_model, forecast_model, vae_model = load_models(dataset)
 
-    input_names = list(dataset.input_variable_names)
-    context_names = list(dataset.context_variable_names)
+    list(dataset.input_variable_names)
+    list(dataset.context_variable_names)
 
     # Import projection dataset
     from scripts.elements.datasets import DatasetProjections2030
