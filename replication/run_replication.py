@@ -7,7 +7,8 @@ This script orchestrates the complete replication pipeline:
 2. Model training (VAE → Predictor → Forecaster)
 3. Inference (Monte Carlo projections)
 4. Sensitivity analysis (Sobol + Perturbation)
-5. Figure generation
+5. Cross-validation model comparison (Table 3)
+6. Figure generation
 
 Usage:
     python run_replication.py                  # Run full pipeline
@@ -92,6 +93,13 @@ PIPELINE_STAGES = {
         "module": True,
         "gpu_required": True,
     },
+    "cv_comparison": {
+        "script": "scripts.analysis.cross_validation_comparison",
+        "description": "Cross-validation comparison of model variants (Table 3)",
+        "args": [],
+        "module": True,
+        "gpu_required": True,
+    },
     "fig1": {
         "script": "scripts.visualization.figure_emissions_gap",
         "description": "Generate Figure 1: Emissions Gap",
@@ -131,7 +139,7 @@ STAGE_GROUPS = {
     "data": ["download", "verify"],
     "train": ["train_vae", "train_predictor", "train_forecaster"],
     "inference": ["inference"],
-    "analysis": ["sobol", "perturbation"],
+    "analysis": ["sobol", "perturbation", "cv_comparison"],
     "figures": ["fig1", "fig2", "fig3", "fig4", "fig_latent"],
     "full": [
         "download",
@@ -142,6 +150,7 @@ STAGE_GROUPS = {
         "inference",
         "sobol",
         "perturbation",
+        "cv_comparison",
         "fig1",
         "fig2",
         "fig3",
@@ -383,24 +392,25 @@ Stage Groups:
     data       - download, verify
     train      - train_vae, train_predictor, train_forecaster
     inference  - inference
-    analysis   - sobol, perturbation
+    analysis   - sobol, perturbation, cv_comparison
     figures    - fig1, fig2, fig3, fig4, fig_latent
     full       - Complete pipeline in order
 
 Individual Stages:
-    download        - Download data from Google Drive
-    verify          - Verify data files exist
-    train_vae       - Train VAE model
-    train_predictor - Train emission predictor
+    download         - Download data from Google Drive
+    verify           - Verify data files exist
+    train_vae        - Train VAE model
+    train_predictor  - Train emission predictor
     train_forecaster - Train latent forecaster
-    inference       - Generate Monte Carlo projections
-    sobol           - Sobol sensitivity analysis
-    perturbation    - Perturbation sensitivity analysis
-    fig1            - Generate Figure 1
-    fig2            - Generate Figure 2
-    fig3            - Generate Figure 3
-    fig4            - Generate Figure 4
-    fig_latent      - Generate supplementary latent space figures (UMAP + t-SNE)
+    inference        - Generate Monte Carlo projections
+    sobol            - Sobol sensitivity analysis
+    perturbation     - Perturbation sensitivity analysis
+    cv_comparison    - Cross-validation model comparison (Table 3)
+    fig1             - Generate Figure 1
+    fig2             - Generate Figure 2
+    fig3             - Generate Figure 3
+    fig4             - Generate Figure 4
+    fig_latent       - Generate supplementary latent space figures (UMAP + t-SNE)
 
 Examples:
     python run_replication.py                      # Run full pipeline
@@ -408,6 +418,7 @@ Examples:
     python run_replication.py figures              # Generate all figures
     python run_replication.py fig1 fig2            # Generate specific figures
     python run_replication.py fig_latent           # Generate latent space figures only
+    python run_replication.py cv_comparison        # Run Table 3 cross-validation only
     python run_replication.py --skip download      # Skip data download
     python run_replication.py --gpu 0 train        # Train on GPU 0
     python run_replication.py --dry-run full       # Show what would run
