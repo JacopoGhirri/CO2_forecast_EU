@@ -27,6 +27,7 @@ import multiprocessing as mp
 # Set multiprocessing start method before other imports
 mp.set_start_method("spawn", force=True)
 
+import random
 from collections import deque
 from pathlib import Path
 
@@ -50,6 +51,14 @@ from scripts.utils import (
     init_weights,
     load_config,
 )
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+SEED = 0
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
 
 
 def main():
