@@ -19,7 +19,7 @@ prediction approaches on identical data partitions:
      context variables (GDP, population, climate, HDD/CDD).  This isolates the
      contribution of the probabilistic latent space alone.
 
-  6. **VAE + Climate Variables (Final)** — The complete pipeline as described
+  6. **VAE + Context Variables (Final)** — The complete pipeline as described
      in the paper, with VAE encoding and all context variables included.
 
 For each split every model is trained from scratch (including fitting PCA/KPCA/ICA
@@ -201,12 +201,19 @@ def get_or_create_dataset() -> DatasetPrediction:
     """
     Loads the cached prediction dataset, or creates it from raw CSVs.
 
-    Returns a DatasetPrediction instance whose __getitem__ yields:
-        (x_t, c_t, y_t, x_{t-1}, c_{t-1}, y_{t-1})
+    If the cached dataset is a DatasetUnified (not DatasetPrediction),
+    it is converted by changing its class, since DatasetPrediction only
+    overrides __getitem__.
     """
     if DATASET_PATH.exists():
         print(f"Loading cached dataset from {DATASET_PATH}")
-        return load_dataset(DATASET_PATH)
+        ds = load_dataset(DATASET_PATH)
+        # The cached file may be a DatasetUnified saved by train_vae.py.
+        # DatasetPrediction only overrides __getitem__, so we can safely
+        # change the class to get the 6-tuple behavior.
+        if not isinstance(ds, DatasetPrediction):
+            ds.__class__ = DatasetPrediction
+        return ds
 
     with open(VARIABLE_FILE) as f:
         nested_variables = [line.strip() for line in f if line.strip()]
@@ -218,7 +225,7 @@ def get_or_create_dataset() -> DatasetPrediction:
         select_years=np.arange(2010, 2023 + 1),
         select_geo=EU27_COUNTRIES,
         nested_variables=nested_variables,
-        with_cuda=False,  # Keep on CPU; we move per-batch
+        with_cuda=False,
         scaling_type="normalization",
     )
     save_dataset(dataset, DATASET_PATH)
@@ -331,7 +338,7 @@ def _train_vae(
         weight_decay=config.vae_weight_decay,
         eps=1e-6,
     )
-    stopper = EarlyStopper(window=10)
+    stopper = EarlyStopper(window=25)
 
     for _epoch in range(epochs):
         # --- Train ---
@@ -396,7 +403,7 @@ def _train_predictor_with_vae(
         weight_decay=pred_config.pred_wd,
         eps=1e-6,
     )
-    stopper = EarlyStopper(window=10)
+    stopper = EarlyStopper(window=25)
 
     for _epoch in range(epochs):
         full_model.train()
@@ -461,7 +468,7 @@ def _train_direct_predictor(
         weight_decay=pred_config.pred_wd,
         eps=1e-6,
     )
-    stopper = EarlyStopper(window=10)
+    stopper = EarlyStopper(window=25)
 
     for _epoch in range(epochs):
         predictor.train()
@@ -575,7 +582,7 @@ def _train_predictor_with_deterministic_latent(
         weight_decay=pred_config.pred_wd,
         eps=1e-6,
     )
-    stopper = EarlyStopper(window=10)
+    stopper = EarlyStopper(window=25)
 
     def _encode_batch(x: torch.Tensor) -> torch.Tensor:
         """Apply sklearn reducer to a batch (CPU numpy round-trip)."""
@@ -632,7 +639,7 @@ def _evaluate_vae_variant(
     loss_mode: str = "factor",
 ) -> dict:
     """
-    Evaluates a VAE-based variant (VAE no-context or VAE+climate) on the
+    Evaluates a VAE-based variant (VAE no-context or VAE+Context) on the
     test set.
 
     Returns per-sector MAE, MSE, Pearson ρ, ℒ_pred, and their averages.
@@ -955,7 +962,7 @@ def _train_predictor_no_context(
         weight_decay=pred_config.pred_wd,
         eps=1e-6,
     )
-    stopper = EarlyStopper(window=10)
+    stopper = EarlyStopper(window=25)
 
     def _forward_no_ctx(batch):
         """Encode x_t and x_{t-1}, concatenate latents (no context)."""
@@ -1100,8 +1107,8 @@ def run_single_split(
     metrics["variant"] = "vae_no_context"
     results.append(metrics)
 
-    # --- 6. VAE + Climate (Final) ---
-    print(f"  Split {split_id}: VAE + Climate (Final)...")
+    # --- 6. VAE + Context (Final) ---
+    print(f"  Split {split_id}: VAE + Context (Final)...")
     metrics = run_vae_variant(
         dataset, train_idx, val_idx, test_idx, include_context=True
     )
