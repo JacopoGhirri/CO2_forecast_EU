@@ -40,7 +40,6 @@ from scripts.elements.models import (
     EmissionPredictor,
     Encoder,
     FullPredictionModel,
-    LatentForecaster,
     VAEModel,
     reparameterize,
     uncertainty_aware_mse_loss,
