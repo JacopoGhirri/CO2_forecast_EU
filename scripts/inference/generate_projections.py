@@ -188,7 +188,8 @@ def load_models(
         dropout=vae_config.vae_dropouts,
     )
     vae_model = VAEModel(encoder, decoder).cuda()
-    vae_model.load_state_dict(torch.load(vae_model_path))
+    # Load weights to CPU first to avoid CUDA context issues in worker processes
+    vae_model.load_state_dict(torch.load(vae_model_path, map_location="cpu"))
     set_eval_mode(vae_model)
 
     # Build predictor
@@ -207,7 +208,10 @@ def load_models(
 
     # Load full prediction model (contains both VAE and predictor weights)
     full_pred_model = FullPredictionModel(vae=vae_model, predictor=predictor)
-    full_pred_model.load_state_dict(torch.load(predictor_model_path))
+    # Load weights to CPU first - more robust parallelization
+    full_pred_model.load_state_dict(
+        torch.load(predictor_model_path, map_location="cpu")
+    )
     set_eval_mode(full_pred_model)
 
     # Build forecaster
@@ -226,7 +230,10 @@ def load_models(
     full_forecast_model = FullLatentForecastingModel(
         vae=vae_model, forecaster=forecaster
     )
-    full_forecast_model.load_state_dict(torch.load(forecaster_model_path))
+    # Load weights to CPU first - more robust parallelization
+    full_forecast_model.load_state_dict(
+        torch.load(forecaster_model_path, map_location="cpu")
+    )
     set_eval_mode(full_forecast_model)
 
     return vae_model, predictor, forecaster, latent_dim
@@ -279,13 +286,13 @@ def project_country(
 
     # Get 2023 latent state (t-1 for first projection year)
     idx_2023 = dataset.index_map.get((country, 2023))
-    input_2023 = dataset.input_df[idx_2023].unsqueeze(0)
+    input_2023 = dataset.input_df[idx_2023].unsqueeze(0).cuda()  # move back to GPU
     mean_2023, log_var_2023 = vae_model.encoder(input_2023)
     latent_prev = reparameterize(mean_2023, torch.exp(0.5 * log_var_2023))
 
     # Get 2022 latent state (t-2 for first projection year)
     idx_2022 = dataset.index_map.get((country, 2022))
-    input_2022 = dataset.input_df[idx_2022].unsqueeze(0)
+    input_2022 = dataset.input_df[idx_2022].unsqueeze(0).cuda()  # move back to GPU
     mean_2022, log_var_2022 = vae_model.encoder(input_2022)
     reparameterize(mean_2022, torch.exp(0.5 * log_var_2022))
 
@@ -293,7 +300,7 @@ def project_country(
     avg_log_var = (log_var_2023 + log_var_2022) / 2
 
     # Initialize emission history from 2023
-    emissions_prev = dataset.emi_df[idx_2023, :].unsqueeze(0)
+    emissions_prev = dataset.emi_df[idx_2023, :].unsqueeze(0).cuda()  # move back to GPU
 
     # Track means for forecaster (which uses means, not samples)
     mean_prev = mean_2023
@@ -308,8 +315,8 @@ def project_country(
         context_prev, context_current = projection_dataset.get_from_keys_shifted(
             country, year
         )
-        context_prev = context_prev.unsqueeze(0)
-        context_current = context_current.unsqueeze(0)
+        context_prev = context_prev.unsqueeze(0).cuda()  # move back to GPU
+        context_current = context_current.unsqueeze(0).cuda()  # move back to GPU
 
         # Forecast latent mean for current year
         mean_current = forecaster(mean_prev, mean_past, context_current, context_prev)
@@ -364,8 +371,23 @@ def process_mc_sample(
     Returns:
         List of all result rows for this MC sample.
     """
-    # Load data and models (each process gets its own copy)
-    dataset = load_dataset(dataset_path)
+    # The pickled dataset may contain CUDA tensors which fail to deserialize
+    # in spawned worker processes. Monkey-patch torch.load to force CPU loading
+    # during dataset unpickling, then restore the original.
+    _original_torch_load = torch.load
+    torch.load = lambda *args, **kwargs: _original_torch_load(
+        *args, **{**kwargs, "map_location": "cpu"}
+    )
+    try:
+        dataset = load_dataset(dataset_path)
+    finally:
+        torch.load = _original_torch_load
+
+    # Ensure all dataset tensors are on CPU (they'll be moved to GPU
+    # individually in project_country when needed)
+    dataset.input_df = dataset.input_df.cpu()
+    dataset.context_df = dataset.context_df.cpu()
+    dataset.emi_df = dataset.emi_df.cpu()
 
     vae_model, predictor, forecaster, latent_dim = load_models(
         dataset=dataset,
