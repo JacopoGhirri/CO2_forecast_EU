@@ -13,6 +13,8 @@ Example:
     >>> model.apply(init_weights)
 """
 
+from __future__ import annotations
+
 import pickle
 from pathlib import Path
 from types import SimpleNamespace

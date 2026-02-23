@@ -25,6 +25,8 @@ Example:
     >>> delta, uncertainty, *diagnostics = full_model(x_t, x_t1, c_t, c_t1)
 """
 
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 

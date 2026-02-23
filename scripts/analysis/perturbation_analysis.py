@@ -28,6 +28,8 @@ Reference:
     Figure 4 panel (b) shows Spearman correlation results.
 """
 
+from __future__ import annotations
+
 import csv
 import pickle
 import random

@@ -35,6 +35,8 @@ Example:
     >>> x_t, c_t, emissions, x_t1, c_t1 = dataset[0]
 """
 
+from __future__ import annotations
+
 from copy import deepcopy
 from typing import Any
 
