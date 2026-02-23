@@ -213,6 +213,7 @@ def run_stage(
 
     # Set environment
     env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
     if gpu_id is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
