@@ -820,9 +820,9 @@ class DatasetProjections2030(DatasetUnified):
     """
 
     PROJECTION_FILES = [
-        "Data/full_timeseries/projections/gdp_quarterly.csv",
-        "Data/full_timeseries/projections/population.csv",
-        "Data/full_timeseries/projections/climate.csv",
+        "data/full_timeseries/projections/gdp_quarterly.csv",
+        "data/full_timeseries/projections/population.csv",
+        "data/full_timeseries/projections/climate.csv",
     ]
 
     EU27_COUNTRIES = [
