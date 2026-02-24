@@ -6,14 +6,14 @@ This script orchestrates the complete replication pipeline:
 1. Data download and verification
 2. Model training (VAE → Predictor → Forecaster)
 3. Inference (Monte Carlo projections)
-4. Sensitivity analysis (Sobol + Perturbation)
+4. Sensitivity analysis (Sobol + Spearman, unified)
 5. Cross-validation model comparison (Table 3)
 6. Figure generation
 
 Usage:
     python run_replication.py                  # Run full pipeline
     python run_replication.py train            # Run only training stages
-    python run_replication.py sobol            # Run only Sobol analysis
+    python run_replication.py sensitivity      # Run unified sensitivity analysis
     python run_replication.py --skip download  # Skip data download
     python run_replication.py --gpu 0 train    # Train on specific GPU
     python run_replication.py --dry-run full   # Show what would run
@@ -79,16 +79,9 @@ PIPELINE_STAGES = {
         "module": True,
         "gpu_required": True,
     },
-    "sobol": {
-        "script": "scripts.analysis.sobol_analysis",
-        "description": "Run Sobol sensitivity analysis",
-        "args": [],
-        "module": True,
-        "gpu_required": True,
-    },
-    "perturbation": {
-        "script": "scripts.analysis.perturbation_analysis",
-        "description": "Run perturbation sensitivity analysis",
+    "sensitivity": {
+        "script": "scripts.analysis.sensitivity_analysis",
+        "description": "Run unified sensitivity analysis (Sobol + Spearman)",
         "args": [],
         "module": True,
         "gpu_required": True,
@@ -139,7 +132,7 @@ STAGE_GROUPS = {
     "data": ["download", "verify"],
     "train": ["train_vae", "train_predictor", "train_forecaster"],
     "inference": ["inference"],
-    "analysis": ["sobol", "perturbation", "cv_comparison"],
+    "analysis": ["sensitivity", "cv_comparison"],
     "figures": ["fig1", "fig2", "fig3", "fig4", "fig_latent"],
     "full": [
         "download",
@@ -148,8 +141,7 @@ STAGE_GROUPS = {
         "train_predictor",
         "train_forecaster",
         "inference",
-        "sobol",
-        "perturbation",
+        "sensitivity",
         "cv_comparison",
         "fig1",
         "fig2",
@@ -393,7 +385,7 @@ Stage Groups:
     data       - download, verify
     train      - train_vae, train_predictor, train_forecaster
     inference  - inference
-    analysis   - sobol, perturbation, cv_comparison
+    analysis   - sensitivity, cv_comparison
     figures    - fig1, fig2, fig3, fig4, fig_latent
     full       - Complete pipeline in order
 
@@ -404,8 +396,7 @@ Individual Stages:
     train_predictor  - Train emission predictor
     train_forecaster - Train latent forecaster
     inference        - Generate Monte Carlo projections
-    sobol            - Sobol sensitivity analysis
-    perturbation     - Perturbation sensitivity analysis
+    sensitivity      - Unified sensitivity analysis (Sobol + Spearman)
     cv_comparison    - Cross-validation model comparison (Table 3)
     fig1             - Generate Figure 1
     fig2             - Generate Figure 2
@@ -418,6 +409,7 @@ Examples:
     python run_replication.py train                # Run training stages only
     python run_replication.py figures              # Generate all figures
     python run_replication.py fig1 fig2            # Generate specific figures
+    python run_replication.py sensitivity          # Run unified sensitivity analysis
     python run_replication.py fig_latent           # Generate latent space figures only
     python run_replication.py cv_comparison        # Run Table 3 cross-validation only
     python run_replication.py --skip download      # Skip data download
