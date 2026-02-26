@@ -15,6 +15,15 @@ Uncertainty is captured through reparameterization sampling in the latent
 space before linking latent variables to emissions. Learned uncertainty
 estimates from the predictor are also computed and stored.
 
+Execution model:
+    Models and data are loaded once onto a single GPU. MC samples are
+    processed sequentially, with each sample seeded deterministically
+    (SEED + mc_sample) so that sample i always produces identical results
+    regardless of chunk size, resume point, or execution environment.
+    This avoids CUDA context issues that arise when spawning multiple
+    processes that each try to initialise their own GPU context (common
+    on HPC clusters with SLURM/PBS resource isolation).
+
 Usage:
     python -m scripts.inference.generate_projections
 
@@ -27,14 +36,10 @@ Reference:
 """
 
 import csv
-import multiprocessing as mp
-from functools import partial
+import random
 from pathlib import Path
 
 import torch
-
-# Must be set before importing torch-dependent modules
-mp.set_start_method("spawn", force=True)
 
 from config.data.output_configs import output_configs
 from scripts.elements.datasets import DatasetProjections2030, DatasetUnified
@@ -54,13 +59,12 @@ from scripts.utils import load_config, load_dataset
 # Configuration
 # =============================================================================
 
-# Reproducibility
+# Reproducibility — each MC sample is seeded as (SEED + mc_sample)
 SEED = 0
 
 # Monte Carlo settings
 N_MC_SAMPLES = 10000
-N_PROCESSES = 10
-CHUNK_SIZE = 10  # Process MC samples in chunks to manage memory
+CHUNK_SIZE = 100  # Write results to CSV every CHUNK_SIZE samples
 
 # Paths
 OUTPUT_PATH = Path("data/projections/mc_projections.csv")
@@ -111,6 +115,9 @@ EMISSION_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "
 # Projection years
 PROJECTION_YEARS = range(2024, 2031)  # 2024 to 2030 inclusive
 
+# Device configuration
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 
 # =============================================================================
 # Model Loading
@@ -145,10 +152,13 @@ def load_models(
     forecaster_model_path: Path,
 ) -> tuple[VAEModel, EmissionPredictor, LatentForecaster, int]:
     """
-    Loads all trained models for projection.
+    Loads all trained models for projection onto a single device.
+
+    All models are loaded to CPU first and then moved to DEVICE once,
+    avoiding CUDA context issues in multi-process environments.
 
     Args:
-        dataset: Dataset instance (needed for dimensions).
+        dataset: Dataset instance (needed for input/context dimensions).
         vae_config_path: Path to VAE config YAML.
         predictor_config_path: Path to predictor config YAML.
         forecaster_config_path: Path to forecaster config YAML.
@@ -187,8 +197,7 @@ def load_models(
         normalization=vae_config.vae_normalization,
         dropout=vae_config.vae_dropouts,
     )
-    vae_model = VAEModel(encoder, decoder).cuda()
-    # Load weights to CPU first to avoid CUDA context issues in worker processes
+    vae_model = VAEModel(encoder, decoder).to(DEVICE)
     vae_model.load_state_dict(torch.load(vae_model_path, map_location="cpu"))
     set_eval_mode(vae_model)
 
@@ -204,11 +213,10 @@ def load_models(
         normalization=predictor_config.pred_normalization,
         dropout=predictor_config.pred_dropouts,
         uncertainty=True,
-    ).cuda()
+    ).to(DEVICE)
 
     # Load full prediction model (contains both VAE and predictor weights)
     full_pred_model = FullPredictionModel(vae=vae_model, predictor=predictor)
-    # Load weights to CPU first - more robust parallelization
     full_pred_model.load_state_dict(
         torch.load(predictor_model_path, map_location="cpu")
     )
@@ -224,13 +232,12 @@ def load_models(
         activation=forecaster_config.forecast_activation,
         normalization=forecaster_config.forecast_normalization,
         dropout=forecaster_config.forecast_dropouts,
-    ).cuda()
+    ).to(DEVICE)
 
     # Load full forecasting model
     full_forecast_model = FullLatentForecastingModel(
         vae=vae_model, forecaster=forecaster
     )
-    # Load weights to CPU first - more robust parallelization
     full_forecast_model.load_state_dict(
         torch.load(forecaster_model_path, map_location="cpu")
     )
@@ -286,13 +293,13 @@ def project_country(
 
     # Get 2023 latent state (t-1 for first projection year)
     idx_2023 = dataset.index_map.get((country, 2023))
-    input_2023 = dataset.input_df[idx_2023].unsqueeze(0).cuda()  # move back to GPU
+    input_2023 = dataset.input_df[idx_2023].unsqueeze(0).to(DEVICE)
     mean_2023, log_var_2023 = vae_model.encoder(input_2023)
     latent_prev = reparameterize(mean_2023, torch.exp(0.5 * log_var_2023))
 
     # Get 2022 latent state (t-2 for first projection year)
     idx_2022 = dataset.index_map.get((country, 2022))
-    input_2022 = dataset.input_df[idx_2022].unsqueeze(0).cuda()  # move back to GPU
+    input_2022 = dataset.input_df[idx_2022].unsqueeze(0).to(DEVICE)
     mean_2022, log_var_2022 = vae_model.encoder(input_2022)
     reparameterize(mean_2022, torch.exp(0.5 * log_var_2022))
 
@@ -300,7 +307,7 @@ def project_country(
     avg_log_var = (log_var_2023 + log_var_2022) / 2
 
     # Initialize emission history from 2023
-    emissions_prev = dataset.emi_df[idx_2023, :].unsqueeze(0).cuda()  # move back to GPU
+    emissions_prev = dataset.emi_df[idx_2023, :].unsqueeze(0).to(DEVICE)
 
     # Track means for forecaster (which uses means, not samples)
     mean_prev = mean_2023
@@ -315,8 +322,8 @@ def project_country(
         context_prev, context_current = projection_dataset.get_from_keys_shifted(
             country, year
         )
-        context_prev = context_prev.unsqueeze(0).cuda()  # move back to GPU
-        context_current = context_current.unsqueeze(0).cuda()  # move back to GPU
+        context_prev = context_prev.unsqueeze(0).to(DEVICE)
+        context_current = context_current.unsqueeze(0).to(DEVICE)
 
         # Forecast latent mean for current year
         mean_current = forecaster(mean_prev, mean_past, context_current, context_prev)
@@ -350,77 +357,6 @@ def project_country(
     return results
 
 
-def process_mc_sample(
-    mc_sample: int,
-    model_paths: dict[str, Path],
-    config_paths: dict[str, Path],
-    dataset_path: Path,
-) -> list[list]:
-    """
-    Processes one complete Monte Carlo sample for all countries.
-
-    Each MC sample loads its own copy of models and data to enable
-    parallel processing without shared state.
-
-    Args:
-        mc_sample: Monte Carlo sample index.
-        model_paths: Dict with paths to model weights.
-        config_paths: Dict with paths to config files.
-        dataset_path: Path to cached dataset.
-
-    Returns:
-        List of all result rows for this MC sample.
-    """
-    # The pickled dataset may contain CUDA tensors which fail to deserialize
-    # in spawned worker processes. Monkey-patch torch.load to force CPU loading
-    # during dataset unpickling, then restore the original.
-    _original_torch_load = torch.load
-    torch.load = lambda *args, **kwargs: _original_torch_load(
-        *args, **{**kwargs, "map_location": "cpu"}
-    )
-    try:
-        dataset = load_dataset(dataset_path)
-    finally:
-        torch.load = _original_torch_load
-
-    # Ensure all dataset tensors are on CPU (they'll be moved to GPU
-    # individually in project_country when needed)
-    dataset.input_df = dataset.input_df.cpu()
-    dataset.context_df = dataset.context_df.cpu()
-    dataset.emi_df = dataset.emi_df.cpu()
-
-    vae_model, predictor, forecaster, latent_dim = load_models(
-        dataset=dataset,
-        vae_config_path=config_paths["vae"],
-        predictor_config_path=config_paths["predictor"],
-        forecaster_config_path=config_paths["forecaster"],
-        vae_model_path=model_paths["vae"],
-        predictor_model_path=model_paths["predictor"],
-        forecaster_model_path=model_paths["forecaster"],
-    )
-
-    projection_dataset = DatasetProjections2030(dataset)
-
-    # Project all countries
-    all_results = []
-    with torch.no_grad():
-        for country in EU27_COUNTRIES:
-            country_results = project_country(
-                country=country,
-                mc_sample=mc_sample,
-                dataset=dataset,
-                projection_dataset=projection_dataset,
-                vae_model=vae_model,
-                predictor=predictor,
-                forecaster=forecaster,
-                latent_dim=latent_dim,
-            )
-            all_results.extend(country_results)
-
-    print(f"Completed MC sample {mc_sample}")
-    return all_results
-
-
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -431,35 +367,39 @@ def main():
     Main function to run Monte Carlo projections.
 
     Workflow:
-    1. Set up paths and configurations
+    1. Load dataset and all models once onto a single GPU
     2. Create CSV with header
-    3. Process MC samples in parallel using multiprocessing
-    4. Write results in chunks to manage memory
+    3. Process MC samples sequentially, seeding each deterministically
+    4. Write results in chunks to manage memory and allow crash recovery
+
+    Each MC sample is seeded with (SEED + mc_sample) before its forward
+    passes, ensuring that sample i always produces identical results
+    regardless of chunk boundaries, resume point, or total sample count.
     """
-    import random
-
-    random.seed(SEED)
-    torch.manual_seed(SEED)
-
     # Ensure output directory exists
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    # Prepare path dictionaries for worker processes
-    model_paths = {
-        "vae": VAE_MODEL_PATH,
-        "predictor": PREDICTOR_MODEL_PATH,
-        "forecaster": FORECASTER_MODEL_PATH,
-    }
+    print(f"Device: {DEVICE}")
+    print(f"Loading dataset from {DATASET_PATH}...")
 
-    config_paths = {
-        "vae": VAE_CONFIG_PATH,
-        "predictor": PREDICTOR_CONFIG_PATH,
-        "forecaster": FORECASTER_CONFIG_PATH,
-    }
+    # Load dataset once — keep tensors on CPU, move per-sample to GPU
+    dataset = load_dataset(DATASET_PATH)
+    dataset.input_df = dataset.input_df.cpu()
+    dataset.context_df = dataset.context_df.cpu()
+    dataset.emi_df = dataset.emi_df.cpu()
 
-    # Load config to determine latent dimension for header
-    vae_config = load_config(VAE_CONFIG_PATH)
-    latent_dim = vae_config.vae_latent_dim
+    print("Loading models...")
+    vae_model, predictor, forecaster, latent_dim = load_models(
+        dataset=dataset,
+        vae_config_path=VAE_CONFIG_PATH,
+        predictor_config_path=PREDICTOR_CONFIG_PATH,
+        forecaster_config_path=FORECASTER_CONFIG_PATH,
+        vae_model_path=VAE_MODEL_PATH,
+        predictor_model_path=PREDICTOR_MODEL_PATH,
+        forecaster_model_path=FORECASTER_MODEL_PATH,
+    )
+
+    projection_dataset = DatasetProjections2030(dataset)
 
     # Create CSV header
     header = (
@@ -474,37 +414,48 @@ def main():
         writer = csv.writer(f)
         writer.writerow(header)
 
-    print(
-        f"Starting {N_MC_SAMPLES} Monte Carlo projections with {N_PROCESSES} processes"
-    )
+    print(f"Starting {N_MC_SAMPLES} Monte Carlo projections (sequential, single GPU)")
     print(f"Output: {OUTPUT_PATH}")
 
-    # Create partial function with fixed arguments
-    process_func = partial(
-        process_mc_sample,
-        model_paths=model_paths,
-        config_paths=config_paths,
-        dataset_path=DATASET_PATH,
-    )
+    # Process MC samples sequentially in chunks
+    for chunk_start in range(0, N_MC_SAMPLES, CHUNK_SIZE):
+        chunk_end = min(chunk_start + CHUNK_SIZE, N_MC_SAMPLES)
+        print(f"Processing MC samples {chunk_start} to {chunk_end - 1}...")
 
-    # Process in parallel with chunked writing
-    with mp.Pool(processes=N_PROCESSES) as pool:
-        for chunk_start in range(0, N_MC_SAMPLES, CHUNK_SIZE):
-            chunk_end = min(chunk_start + CHUNK_SIZE, N_MC_SAMPLES)
-            mc_indices = range(chunk_start, chunk_end)
+        chunk_results = []
 
-            print(f"Processing MC samples {chunk_start} to {chunk_end - 1}...")
+        for mc_sample in range(chunk_start, chunk_end):
+            # Deterministic per-sample seeding: sample i always gets the
+            # same RNG state, making results reproducible regardless of
+            # chunk boundaries or resume point.
+            random.seed(SEED + mc_sample)
+            torch.manual_seed(SEED + mc_sample)
+            if DEVICE == "cuda":
+                torch.cuda.manual_seed(SEED + mc_sample)
 
-            # Map function to MC indices
-            results_list = pool.map(process_func, mc_indices)
+            with torch.no_grad():
+                for country in EU27_COUNTRIES:
+                    country_results = project_country(
+                        country=country,
+                        mc_sample=mc_sample,
+                        dataset=dataset,
+                        projection_dataset=projection_dataset,
+                        vae_model=vae_model,
+                        predictor=predictor,
+                        forecaster=forecaster,
+                        latent_dim=latent_dim,
+                    )
+                    chunk_results.extend(country_results)
 
-            # Write chunk results to CSV
-            with open(OUTPUT_PATH, mode="a", newline="") as f:
-                writer = csv.writer(f)
-                for results in results_list:
-                    writer.writerows(results)
+            if (mc_sample + 1) % 100 == 0:
+                print(f"  Completed MC sample {mc_sample}")
 
-            print(f"Saved chunk {chunk_start}-{chunk_end - 1}")
+        # Write chunk results to CSV
+        with open(OUTPUT_PATH, mode="a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerows(chunk_results)
+
+        print(f"Saved chunk {chunk_start}-{chunk_end - 1}")
 
     print(f"\nProjections complete! Results saved to {OUTPUT_PATH}")
     print(
