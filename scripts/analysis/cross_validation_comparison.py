@@ -643,7 +643,7 @@ def _make_loaders(dataset, train_idx, val_idx, test_idx):
         "num_workers": NUM_WORKERS,
         "pin_memory": PIN_MEMORY,
     }
-    train_l = DataLoader(Subset(dataset, train_idx), shuffle=True, **kwargs)
+    train_l = DataLoader(Subset(dataset, train_idx), shuffle=True, drop_last=True, **kwargs)
     val_l = DataLoader(Subset(dataset, val_idx), shuffle=False, **kwargs)
     test_l = DataLoader(Subset(dataset, test_idx), shuffle=False, **kwargs)
     return train_l, val_l, test_l
