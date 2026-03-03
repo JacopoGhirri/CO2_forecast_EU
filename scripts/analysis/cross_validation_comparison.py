@@ -684,6 +684,7 @@ def run_deterministic_latent(method, dataset, train_idx, val_idx, test_idx):
         Subset(pre_ds, train_idx),
         batch_size=BATCH_SIZE,
         shuffle=True,
+        drop_last=True,
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
     )
