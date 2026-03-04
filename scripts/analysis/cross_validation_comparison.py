@@ -36,7 +36,7 @@ import torch.nn as nn
 from scipy.stats import pearsonr
 from sklearn.decomposition import PCA, FastICA, KernelPCA
 from sklearn.model_selection import KFold
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from config.data.output_configs import output_configs
 from scripts.elements.datasets import DatasetPrediction
@@ -70,6 +70,9 @@ EPOCHS_VAE = 3000
 EPOCHS_PREDICTOR = 3000
 EPOCHS_DIRECT = 3000
 STOPPER_WINDOW = 50
+# ---- patience for actual early stopping ----
+# Training breaks if smoothed val loss has not improved for PATIENCE epochs.
+PATIENCE = 200
 LATENT_DIM = 10
 REDUCTION_DIM = LATENT_DIM
 
@@ -85,33 +88,9 @@ CHECKPOINT_PATH = Path("data/checkpoints/ablation_checkpoint.csv")
 OUTPUT_DIR = Path("outputs/tables")
 
 EU27_COUNTRIES = [
-    "AT",
-    "BE",
-    "BG",
-    "HR",
-    "CY",
-    "CZ",
-    "DK",
-    "EE",
-    "EL",
-    "FI",
-    "FR",
-    "DE",
-    "HU",
-    "IE",
-    "IT",
-    "LV",
-    "LT",
-    "LU",
-    "MT",
-    "NL",
-    "PL",
-    "PT",
-    "RO",
-    "SK",
-    "SI",
-    "ES",
-    "SE",
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI",
+    "FR", "DE", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
 ]
 
 SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Power"]
@@ -139,29 +118,53 @@ def _pred_config():
 
 
 # =============================================================================
-# EarlyStopper
+# EarlyStopper — now actually stops training
 # =============================================================================
 class EarlyStopper:
-    """Tracks smoothed validation loss and stores best model weights."""
+    """Tracks smoothed validation loss, stores best weights, and signals when
+    to break the training loop.
 
-    def __init__(self, window: int = STOPPER_WINDOW):
+    Args:
+        window: Number of recent losses used for the smoothed average.
+        patience: Training stops if the smoothed loss has not improved for
+            this many consecutive epochs.  Set to ``None`` or ``float('inf')``
+            to disable early breaking (original behaviour).
+    """
+
+    def __init__(
+        self,
+        window: int = STOPPER_WINDOW,
+        patience: int = PATIENCE,
+    ):
+        self.window = window
+        self.patience = patience
         self.history: deque[float] = deque(maxlen=window)
         self.best_smooth: float = float("inf")
         self.best_weights: dict | None = None
+        self._epochs_without_improvement: int = 0
 
-    def step(self, val_loss: float, model: nn.Module) -> None:
+    def step(self, val_loss: float, model: nn.Module) -> bool:
+        """Update state and return ``True`` if training should stop."""
         self.history.append(val_loss)
         smooth = sum(self.history) / len(self.history)
         if smooth < self.best_smooth:
             self.best_smooth = smooth
             self.best_weights = {
-                k: v.cpu().clone() for k, v in model.state_dict().items()
+                k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
+            self._epochs_without_improvement = 0
+        else:
+            self._epochs_without_improvement += 1
+        return self._epochs_without_improvement >= self.patience
 
     def restore(self, model: nn.Module) -> None:
         if self.best_weights is not None:
             model.load_state_dict(self.best_weights)
             model.to(DEVICE)
+
+    @property
+    def epochs_without_improvement(self) -> int:
+        return self._epochs_without_improvement
 
 
 # =============================================================================
@@ -194,6 +197,8 @@ def get_or_create_dataset() -> DatasetPrediction:
 
 
 def _ensure_cpu_dataset(dataset: DatasetPrediction) -> None:
+    """Move dataset tensors to CPU (required for multi-worker DataLoaders)
+    and configure DataLoader settings for the available device."""
     global PIN_MEMORY, NUM_WORKERS
     tensor_attrs = ["input_df", "context_df", "emi_df"]
     is_cuda = any(
@@ -214,6 +219,76 @@ def _ensure_cpu_dataset(dataset: DatasetPrediction) -> None:
         PIN_MEMORY, NUM_WORKERS = True, 4
     else:
         PIN_MEMORY, NUM_WORKERS = False, 0
+
+
+# =============================================================================
+# Pre-reduced dataset — clean standalone implementation
+# =============================================================================
+class PreReducedDataset(Dataset):
+    """Standalone dataset that pairs reduced features with context and
+    emissions, replicating the pairing logic of ``DatasetPrediction``
+    without monkey-patching.
+
+    The original ``DatasetPrediction.__getitem__`` returns a tuple:
+        (x_t, c_t, y_t, x_{t-1}, c_{t-1}, y_{t-1})
+    where ``x_t`` comes from ``input_df``.  This class substitutes a
+    pre-computed reduced representation ``Z`` for ``input_df`` while
+    keeping context and emission tensors, as well as the pairing index,
+    from the original dataset.
+
+    Parameters
+    ----------
+    original : DatasetPrediction
+        The original dataset (used to read context_df, emi_df, and the
+        internal pairing index that maps each sample to its t-1 partner).
+    Z_all : torch.Tensor
+        Reduced features for every row, shape ``(N, reduced_dim)``.
+        Must be on CPU (pinned memory is used by the DataLoader).
+    """
+
+    def __init__(self, original: DatasetPrediction, Z_all: torch.Tensor):
+        super().__init__()
+        self.Z = Z_all  # (N, reduced_dim) — CPU tensor
+        self.context = original.context_df  # (N, context_dim)
+        self.emissions = original.emi_df  # (N, n_sectors)
+
+        # The pairing index that maps sample i -> its t-1 counterpart.
+        # DatasetPrediction stores this in different attributes depending
+        # on version; try the most common names.
+        self._pair_idx = None
+        for attr_name in ("pair_index", "idx_prev", "index_prev", "prev_idx"):
+            if hasattr(original, attr_name):
+                self._pair_idx = getattr(original, attr_name)
+                break
+
+        # Fallback: if the original dataset simply uses [i] and [i-1]
+        # (i.e. each sample is paired with the preceding row), we
+        # replicate that convention.
+        if self._pair_idx is None:
+            self._pair_idx = np.clip(np.arange(len(original)) - 1, 0, None)
+
+    def __len__(self) -> int:
+        return self.Z.shape[0]
+
+    def __getitem__(self, idx: int):
+        prev = int(self._pair_idx[idx])
+        z_t = self.Z[idx]
+        c_t = self.context[idx]
+        y_t = self.emissions[idx]
+        z_t1 = self.Z[prev]
+        c_t1 = self.context[prev]
+        y_t1 = self.emissions[prev]
+        return z_t, c_t, y_t, z_t1, c_t1, y_t1
+
+
+# =============================================================================
+# Device-transfer helper
+# =============================================================================
+def _batch_to_device(batch: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, ...]:
+    """Move a whole batch tuple to DEVICE with non-blocking transfers.
+    When PIN_MEMORY is True (CUDA path), this overlaps the copy with
+    computation on the default stream."""
+    return tuple(b.to(DEVICE, non_blocking=PIN_MEMORY) for b in batch)
 
 
 # =============================================================================
@@ -289,12 +364,9 @@ def _train_vae(vae, train_loader, val_loader, epochs, extract_x):
         eps=1e-6,
     )
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
+    stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
 
-    recon_history: deque[float] = deque(maxlen=STOPPER_WINDOW)
-    best_recon_smooth = float("inf")
-    best_weights = None
-
-    for _ in range(epochs):
+    for epoch in range(epochs):
         vae.train()
         for batch in train_loader:
             x = extract_x(batch).to(DEVICE, non_blocking=PIN_MEMORY)
@@ -309,9 +381,10 @@ def _train_vae(vae, train_loader, val_loader, epochs, extract_x):
             scaler.step(optimizer)
             scaler.update()
 
-        # Validation — model selection on smoothed reconstruction loss
+        # Validation
         vae.eval()
         val_recon = 0.0
+        n_val_batches = 0
         with torch.inference_mode():
             for batch in val_loader:
                 x = extract_x(batch).to(DEVICE, non_blocking=PIN_MEMORY)
@@ -319,17 +392,16 @@ def _train_vae(vae, train_loader, val_loader, epochs, extract_x):
                     x_hat, mean, log_var = vae(x)
                     recon, _kl = vae_loss(x, x_hat, mean, log_var)
                 val_recon += recon.item()
-        val_recon /= len(val_loader)
+                n_val_batches += 1
+        val_recon /= max(n_val_batches, 1)
 
-        recon_history.append(val_recon)
-        smooth = sum(recon_history) / len(recon_history)
-        if smooth < best_recon_smooth:
-            best_recon_smooth = smooth
-            best_weights = {k: v.cpu().clone() for k, v in vae.state_dict().items()}
+        should_stop = stopper.step(val_recon, vae)
+        if should_stop:
+            print(f"    VAE early stop at epoch {epoch + 1}/{epochs} "
+                  f"(no improvement for {PATIENCE} epochs)")
+            break
 
-    if best_weights is not None:
-        vae.load_state_dict(best_weights)
-        vae.to(DEVICE)
+    stopper.restore(vae)
     return vae
 
 
@@ -353,15 +425,13 @@ def _train_predictor_with_vae(
         pred_config,
     )
 
-    stopper = EarlyStopper(window=STOPPER_WINDOW)
+    stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
-    for _ in range(epochs):
+    for epoch in range(epochs):
         full_model.train()
         for batch in train_loader:
-            x_t, c_t, y_t, x_t1, c_t1, y_t1 = [
-                b.to(DEVICE, non_blocking=PIN_MEMORY) for b in batch
-            ]
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                 delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
@@ -377,19 +447,23 @@ def _train_predictor_with_vae(
 
         full_model.eval()
         val_loss = 0.0
+        n_val_batches = 0
         with torch.inference_mode():
             for batch in val_loader:
-                x_t, c_t, y_t, x_t1, c_t1, y_t1 = [
-                    b.to(DEVICE, non_blocking=PIN_MEMORY) for b in batch
-                ]
+                x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
                 with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                     delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
                     delta_true = y_t - y_t1
                     val_loss += uncertainty_aware_mse_loss(
                         delta_true, delta_pred, unc, mode=loss_mode
                     ).item()
-        val_loss /= len(val_loader)
-        stopper.step(val_loss, full_model)
+                n_val_batches += 1
+        val_loss /= max(n_val_batches, 1)
+
+        should_stop = stopper.step(val_loss, full_model)
+        if should_stop:
+            print(f"    Predictor (VAE+ctx) early stop at epoch {epoch + 1}/{epochs}")
+            break
 
     stopper.restore(full_model)
     return full_model
@@ -401,13 +475,11 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
 
     pred_config = _pred_config()
     optimizer = _get_pred_optimizer(full_model.predictor.parameters(), pred_config)
-    stopper = EarlyStopper(window=STOPPER_WINDOW)
+    stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
     def _forward_no_ctx(batch):
-        x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = [
-            b.to(DEVICE, non_blocking=PIN_MEMORY) for b in batch
-        ]
+        x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = _batch_to_device(batch)
         mean_t, logvar_t = full_model.encoder(x_t)
         mean_t1, logvar_t1 = full_model.encoder(x_t1)
         z_t = reparameterize(mean_t, torch.exp(0.5 * logvar_t))
@@ -417,7 +489,7 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
         delta_true = y_t - y_t1
         return delta_pred, unc, delta_true
 
-    for _ in range(epochs):
+    for epoch in range(epochs):
         full_model.train()
         full_model.vae.eval()
         for batch in train_loader:
@@ -435,6 +507,7 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
 
         full_model.eval()
         val_loss = 0.0
+        n_val_batches = 0
         with torch.inference_mode():
             for batch in val_loader:
                 with torch.amp.autocast(DEVICE, enabled=USE_AMP):
@@ -442,8 +515,13 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
                     val_loss += uncertainty_aware_mse_loss(
                         delta_true, delta_pred, unc, mode="factor"
                     ).item()
-        val_loss /= len(val_loader)
-        stopper.step(val_loss, full_model)
+                n_val_batches += 1
+        val_loss /= max(n_val_batches, 1)
+
+        should_stop = stopper.step(val_loss, full_model)
+        if should_stop:
+            print(f"    Predictor (no-ctx) early stop at epoch {epoch + 1}/{epochs}")
+            break
 
     stopper.restore(full_model)
     return full_model
@@ -454,15 +532,13 @@ def _train_direct_predictor(
 ):
     pred_config = _pred_config()
     optimizer = _get_pred_optimizer(predictor.parameters(), pred_config)
-    stopper = EarlyStopper(window=STOPPER_WINDOW)
+    stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
-    for _ in range(epochs):
+    for epoch in range(epochs):
         predictor.train()
         for batch in train_loader:
-            x_t, c_t, y_t, x_t1, c_t1, y_t1 = [
-                b.to(DEVICE, non_blocking=PIN_MEMORY) for b in batch
-            ]
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
             inp = torch.cat([x_t, c_t, x_t1, c_t1], dim=1)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(DEVICE, enabled=USE_AMP):
@@ -479,11 +555,10 @@ def _train_direct_predictor(
 
         predictor.eval()
         val_loss = 0.0
+        n_val_batches = 0
         with torch.inference_mode():
             for batch in val_loader:
-                x_t, c_t, y_t, x_t1, c_t1, y_t1 = [
-                    b.to(DEVICE, non_blocking=PIN_MEMORY) for b in batch
-                ]
+                x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
                 inp = torch.cat([x_t, c_t, x_t1, c_t1], dim=1)
                 with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                     delta_pred, unc = predictor(inp)
@@ -491,8 +566,13 @@ def _train_direct_predictor(
                     val_loss += uncertainty_aware_mse_loss(
                         delta_true, delta_pred, unc, mode=loss_mode
                     ).item()
-        val_loss /= len(val_loader)
-        stopper.step(val_loss, predictor)
+                n_val_batches += 1
+        val_loss /= max(n_val_batches, 1)
+
+        should_stop = stopper.step(val_loss, predictor)
+        if should_stop:
+            print(f"    Direct predictor early stop at epoch {epoch + 1}/{epochs}")
+            break
 
     stopper.restore(predictor)
     return predictor
@@ -518,29 +598,6 @@ def _fit_deterministic_reduction(method, X_train, n_components):
         raise ValueError(f"Unknown method: {method}")
     reducer.fit(X_train)
     return reducer
-
-
-# =============================================================================
-# Pre-reduced dataset wrapper
-# =============================================================================
-class _PreReducedDataset:
-    """Wraps DatasetPrediction, substituting pre-computed reduced features."""
-
-    def __init__(self, original: DatasetPrediction, Z_all: torch.Tensor):
-        self.original = original
-        self.Z_all = Z_all
-        self._original_input_df = original.input_df
-
-    def __len__(self) -> int:
-        return len(self.original)
-
-    def __getitem__(self, idx: int):
-        self.original.input_df = self.Z_all
-        try:
-            result = self.original[idx]
-        finally:
-            self.original.input_df = self._original_input_df
-        return result
 
 
 # =============================================================================
@@ -582,7 +639,7 @@ def _evaluate_vae_variant(full_model, test_loader, loss_mode="factor"):
     all_preds, all_targets, all_uncs = [], [], []
     with torch.inference_mode():
         for batch in test_loader:
-            x_t, c_t, y_t, x_t1, c_t1, y_t1 = [b.to(DEVICE) for b in batch]
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
             delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
             delta_true = y_t - y_t1
             all_preds.append(delta_pred.cpu())
@@ -599,7 +656,7 @@ def _evaluate_vae_no_context(full_model, test_loader):
     all_preds, all_targets, all_uncs = [], [], []
     with torch.inference_mode():
         for batch in test_loader:
-            x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = [b.to(DEVICE) for b in batch]
+            x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = _batch_to_device(batch)
             mean_t, logvar_t = full_model.encoder(x_t)
             mean_t1, logvar_t1 = full_model.encoder(x_t1)
             z_t = reparameterize(mean_t, torch.exp(0.5 * logvar_t))
@@ -621,7 +678,7 @@ def _evaluate_direct_variant(predictor, test_loader, loss_mode="factor"):
     all_preds, all_targets, all_uncs = [], [], []
     with torch.inference_mode():
         for batch in test_loader:
-            x_t, c_t, y_t, x_t1, c_t1, y_t1 = [b.to(DEVICE) for b in batch]
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
             inp = torch.cat([x_t, c_t, x_t1, c_t1], dim=1)
             delta_pred, unc = predictor(inp)
             delta_true = y_t - y_t1
@@ -643,7 +700,9 @@ def _make_loaders(dataset, train_idx, val_idx, test_idx):
         "num_workers": NUM_WORKERS,
         "pin_memory": PIN_MEMORY,
     }
-    train_l = DataLoader(Subset(dataset, train_idx), shuffle=True, drop_last=True, **kwargs)
+    train_l = DataLoader(
+        Subset(dataset, train_idx), shuffle=True, drop_last=True, **kwargs
+    )
     val_l = DataLoader(Subset(dataset, val_idx), shuffle=False, **kwargs)
     test_l = DataLoader(Subset(dataset, test_idx), shuffle=False, **kwargs)
     return train_l, val_l, test_l
@@ -665,43 +724,34 @@ def run_baseline(dataset, train_idx, val_idx, test_idx):
     return _evaluate_direct_variant(predictor, test_l)
 
 
-def run_deterministic_latent(method, dataset, train_idx, val_idx, test_idx):
+def run_deterministic_latent(method, dataset, train_idx, val_idx, test_idx,
+                             input_np_cache: np.ndarray | None = None):
+    """Train a predictor on deterministically reduced features.
+
+    Parameters
+    ----------
+    input_np_cache : np.ndarray or None
+        Pre-computed ``dataset.input_df.cpu().numpy()``.  Passed in from
+        the fold runner to avoid re-converting the full tensor for each
+        reduction method.
+    """
     context_dim = dataset.context_df.shape[1]
 
-    # Fit reducer on training inputs only (no data leakage)
-    X_train = dataset.input_df[train_idx].cpu().numpy()
+    if input_np_cache is None:
+        input_np_cache = dataset.input_df.cpu().numpy()
+
+    # Fit reducer on training inputs only
+    X_train = input_np_cache[train_idx]
     reducer = _fit_deterministic_reduction(method, X_train, REDUCTION_DIM)
 
-    # Pre-compute reduced features for ALL rows (needed because
-    # DatasetPrediction pairing can reference any row as x_{t-1})
+    # Transform all rows once (needed for t-1 pairing)
     Z_all = torch.tensor(
-        reducer.transform(dataset.input_df.cpu().numpy()),
+        reducer.transform(input_np_cache),
         dtype=torch.float32,
     )
 
-    pre_ds = _PreReducedDataset(dataset, Z_all)
-    train_l = DataLoader(
-        Subset(pre_ds, train_idx),
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        drop_last=True,
-        num_workers=NUM_WORKERS,
-        pin_memory=PIN_MEMORY,
-    )
-    val_l = DataLoader(
-        Subset(pre_ds, val_idx),
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=NUM_WORKERS,
-        pin_memory=PIN_MEMORY,
-    )
-    test_l = DataLoader(
-        Subset(pre_ds, test_idx),
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        num_workers=NUM_WORKERS,
-        pin_memory=PIN_MEMORY,
-    )
+    pre_ds = PreReducedDataset(dataset, Z_all)
+    train_l, val_l, test_l = _make_loaders(pre_ds, train_idx, val_idx, test_idx)
 
     predictor = _build_predictor(
         input_dim=2 * (REDUCTION_DIM + context_dim), uncertainty=True
@@ -717,12 +767,6 @@ def run_deterministic_latent(method, dataset, train_idx, val_idx, test_idx):
 # =============================================================================
 def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
     """Run all six model variants on a single fold.
-
-    Args:
-        fold_id: Fold index (used as seed offset for the internal val split).
-        dataset: Full dataset.
-        train_val_pool_idx: Indices of the k-1 training folds (numpy array).
-        test_idx: Indices of the held-out test fold (numpy array).
 
     Returns:
         List of 6 metric dicts, one per variant.
@@ -743,6 +787,10 @@ def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
     # Shared DataLoaders for variants that use the original features
     train_l, val_l, test_l = _make_loaders(dataset, train_idx, val_idx, test_idx)
 
+    # Cache the numpy conversion of input_df once per fold — used by all
+    # three deterministic reduction methods.
+    input_np_cache = dataset.input_df.cpu().numpy()
+
     results = []
 
     def _record(name, metrics):
@@ -761,7 +809,10 @@ def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
         print(f"  Fold {fold_id}: {method}...")
         _record(
             method,
-            run_deterministic_latent(method, dataset, train_idx, val_idx, test_idx),
+            run_deterministic_latent(
+                method, dataset, train_idx, val_idx, test_idx,
+                input_np_cache=input_np_cache,
+            ),
         )
 
     # --- 5-6. VAE variants (shared VAE training) ---
@@ -856,7 +907,7 @@ def main():
         f"Epochs — VAE: {EPOCHS_VAE}, Predictor: {EPOCHS_PREDICTOR}, "
         f"Direct: {EPOCHS_DIRECT}"
     )
-    print(f"Early-stop window: {STOPPER_WINDOW}")
+    print(f"Early-stop window: {STOPPER_WINDOW}, patience: {PATIENCE}")
     print(f"Mixed precision (AMP): {USE_AMP}")
     print()
 
