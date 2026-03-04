@@ -70,7 +70,7 @@ EPOCHS_VAE = 3000
 EPOCHS_PREDICTOR = 3000
 EPOCHS_DIRECT = 3000
 STOPPER_WINDOW = 50
-# ---- patience for actual early stopping ----
+# ---- NEW: patience for actual early stopping ----
 # Training breaks if smoothed val loss has not improved for PATIENCE epochs.
 PATIENCE = 200
 LATENT_DIM = 10
@@ -724,29 +724,17 @@ def run_baseline(dataset, train_idx, val_idx, test_idx):
     return _evaluate_direct_variant(predictor, test_l)
 
 
-def run_deterministic_latent(method, dataset, train_idx, val_idx, test_idx,
-                             input_np_cache: np.ndarray | None = None):
-    """Train a predictor on deterministically reduced features.
-
-    Parameters
-    ----------
-    input_np_cache : np.ndarray or None
-        Pre-computed ``dataset.input_df.cpu().numpy()``.  Passed in from
-        the fold runner to avoid re-converting the full tensor for each
-        reduction method.
-    """
+def run_deterministic_latent(method, dataset, train_idx, val_idx, test_idx):
+    """Train a predictor on deterministically reduced features."""
     context_dim = dataset.context_df.shape[1]
 
-    if input_np_cache is None:
-        input_np_cache = dataset.input_df.cpu().numpy()
-
-    # Fit reducer on training inputs only
-    X_train = input_np_cache[train_idx]
+    # Fit reducer on training inputs only (no data leakage)
+    X_train = dataset.input_df[train_idx].cpu().numpy()
     reducer = _fit_deterministic_reduction(method, X_train, REDUCTION_DIM)
 
     # Transform all rows once (needed for t-1 pairing)
     Z_all = torch.tensor(
-        reducer.transform(input_np_cache),
+        reducer.transform(dataset.input_df.cpu().numpy()),
         dtype=torch.float32,
     )
 
@@ -787,10 +775,6 @@ def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
     # Shared DataLoaders for variants that use the original features
     train_l, val_l, test_l = _make_loaders(dataset, train_idx, val_idx, test_idx)
 
-    # Cache the numpy conversion of input_df once per fold — used by all
-    # three deterministic reduction methods.
-    input_np_cache = dataset.input_df.cpu().numpy()
-
     results = []
 
     def _record(name, metrics):
@@ -811,7 +795,6 @@ def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
             method,
             run_deterministic_latent(
                 method, dataset, train_idx, val_idx, test_idx,
-                input_np_cache=input_np_cache,
             ),
         )
 
