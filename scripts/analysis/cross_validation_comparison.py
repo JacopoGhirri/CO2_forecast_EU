@@ -84,7 +84,7 @@ REDUCTION_DIM = LATENT_DIM
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 USE_AMP = DEVICE == "cuda"
 # torch.compile gives big gains on H100 / modern GPUs (PyTorch ≥ 2.0)
-USE_COMPILE = DEVICE == "cuda"
+USE_COMPILE =  False
 
 DATASET_PATH = Path("data/pytorch_datasets/unified_dataset.pkl")
 VARIABLE_FILE = Path("config/data/variable_selection.txt")
