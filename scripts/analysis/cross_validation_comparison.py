@@ -14,6 +14,13 @@ Model variants:
   5. VAE (no context) — VAE encoding without context variables.
   6. VAE + Context (Final) — Full pipeline with VAE encoding and context.
 
+OPTIMISATION NOTES (vs. original):
+  - Replaced DataLoader + per-sample __getitem__ with FlatGPUData: all
+    temporal pairings are precomputed once, tensors live on GPU.
+  - Batch size auto-scales to dataset size (full-batch when ≤2048 samples).
+  - torch.compile enabled on CUDA for fused kernels.
+  - No DataLoader workers — zero CPU↔GPU transfer per epoch.
+
 Usage:
     python -m scripts.analysis.cross_validation_comparison
 
@@ -66,22 +73,18 @@ N_FOLDS = 5
 # Fraction of the training pool (k-1 folds) reserved for validation / early stopping
 INTERNAL_VAL_RATIO = 0.15
 
-BATCH_SIZE = 128
 EPOCHS_VAE = 3000
 EPOCHS_PREDICTOR = 3000
 EPOCHS_DIRECT = 3000
 STOPPER_WINDOW = 50
-# ---- NEW: patience for actual early stopping ----
-# Training breaks if smoothed val loss has not improved for PATIENCE epochs.
 PATIENCE = 200
 LATENT_DIM = 10
 REDUCTION_DIM = LATENT_DIM
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 USE_AMP = DEVICE == "cuda"
-
-NUM_WORKERS: int = 0
-PIN_MEMORY: bool = False
+# torch.compile gives big gains on H100 / modern GPUs (PyTorch ≥ 2.0)
+USE_COMPILE = DEVICE == "cuda"
 
 DATASET_PATH = Path("data/pytorch_datasets/unified_dataset.pkl")
 VARIABLE_FILE = Path("config/data/variable_selection.txt")
@@ -119,24 +122,13 @@ def _pred_config():
 
 
 # =============================================================================
-# EarlyStopper — now actually stops training
+# EarlyStopper
 # =============================================================================
 class EarlyStopper:
     """Tracks smoothed validation loss, stores best weights, and signals when
-    to break the training loop.
+    to break the training loop."""
 
-    Args:
-        window: Number of recent losses used for the smoothed average.
-        patience: Training stops if the smoothed loss has not improved for
-            this many consecutive epochs.  Set to ``None`` or ``float('inf')``
-            to disable early breaking (original behaviour).
-    """
-
-    def __init__(
-        self,
-        window: int = STOPPER_WINDOW,
-        patience: int = PATIENCE,
-    ):
+    def __init__(self, window: int = STOPPER_WINDOW, patience: int = PATIENCE):
         self.window = window
         self.patience = patience
         self.history: deque[float] = deque(maxlen=window)
@@ -145,7 +137,6 @@ class EarlyStopper:
         self._epochs_without_improvement: int = 0
 
     def step(self, val_loss: float, model: nn.Module) -> bool:
-        """Update state and return ``True`` if training should stop."""
         self.history.append(val_loss)
         smooth = sum(self.history) / len(self.history)
         if smooth < self.best_smooth:
@@ -197,99 +188,116 @@ def get_or_create_dataset() -> DatasetPrediction:
     return dataset
 
 
-def _ensure_cpu_dataset(dataset: DatasetPrediction) -> None:
-    """Move dataset tensors to CPU (required for multi-worker DataLoaders)
-    and configure DataLoader settings for the available device."""
-    global PIN_MEMORY, NUM_WORKERS
-    tensor_attrs = ["input_df", "context_df", "emi_df"]
-    is_cuda = any(
-        hasattr(dataset, attr) and getattr(dataset, attr).is_cuda
-        for attr in tensor_attrs
-    )
-    if is_cuda:
-        print("  Dataset tensors on CUDA — moving to CPU for DataLoader compatibility")
-        for attr in tensor_attrs:
-            if hasattr(dataset, attr):
-                setattr(dataset, attr, getattr(dataset, attr).cpu())
-        for attr in dir(dataset):
-            if not attr.startswith("_"):
-                val = getattr(dataset, attr, None)
-                if isinstance(val, torch.Tensor) and val.is_cuda:
-                    setattr(dataset, attr, val.cpu())
-    if DEVICE == "cuda":
-        PIN_MEMORY, NUM_WORKERS = True, 4
-    else:
-        PIN_MEMORY, NUM_WORKERS = False, 0
-
-
 # =============================================================================
-# Pre-reduced dataset — clean standalone implementation
+# GPU-resident flat tensors — bypass DataLoader / __getitem__ overhead
 # =============================================================================
-class PreReducedDataset(Dataset):
-    """Standalone dataset that pairs reduced features with context and
-    emissions, replicating the pairing logic of ``DatasetPrediction``
-    without monkey-patching.
+class FlatGPUData:
+    """Pre-paired, GPU-resident tensors for a specific index subset.
 
-    The original ``DatasetPrediction.__getitem__`` returns a tuple:
-        (x_t, c_t, y_t, x_{t-1}, c_{t-1}, y_{t-1})
-    where ``x_t`` comes from ``input_df``.  This class substitutes a
-    pre-computed reduced representation ``Z`` for ``input_df`` while
-    keeping context and emission tensors, as well as the pairing index,
-    from the original dataset.
-
-    Parameters
-    ----------
-    original : DatasetPrediction
-        The original dataset (used to read context_df, emi_df, and the
-        internal pairing index that maps each sample to its t-1 partner).
-    Z_all : torch.Tensor
-        Reduced features for every row, shape ``(N, reduced_dim)``.
-        Must be on CPU (pinned memory is used by the DataLoader).
+    Instead of using DataLoader + __getitem__ with dict lookups per sample,
+    this class pre-computes all (t, t-1) pairings once and stores everything
+    on the target device.  Training loops index directly into these tensors.
     """
 
-    def __init__(self, original: DatasetPrediction, Z_all: torch.Tensor):
-        super().__init__()
-        self.Z = Z_all  # (N, reduced_dim) — CPU tensor
-        self.context = original.context_df  # (N, context_dim)
-        self.emissions = original.emi_df  # (N, n_sectors)
+    def __init__(
+        self,
+        dataset: DatasetPrediction,
+        indices: list[int] | np.ndarray,
+    ):
+        indices = list(indices)
+        n = len(indices)
 
-        # The pairing index that maps sample i -> its t-1 counterpart.
-        # DatasetPrediction stores this in different attributes depending
-        # on version; try the most common names.
-        self._pair_idx = None
-        for attr_name in ("pair_index", "idx_prev", "index_prev", "prev_idx"):
-            if hasattr(original, attr_name):
-                self._pair_idx = getattr(original, attr_name)
-                break
+        # Pre-compute the t-1 pairing for every sample, mirroring
+        # DatasetPrediction.__getitem__ logic.
+        prev_indices = []
+        for i in indices:
+            geo = dataset.keys.iloc[i, 0]
+            year = dataset.keys.iloc[i, 1]
+            prev_idx = dataset.index_map.get((geo, year - 1))
+            prev_indices.append(prev_idx if prev_idx is not None else i)
 
-        # Fallback: if the original dataset simply uses [i] and [i-1]
-        # (i.e. each sample is paired with the preceding row), we
-        # replicate that convention.
-        if self._pair_idx is None:
-            self._pair_idx = np.clip(np.arange(len(original)) - 1, 0, None)
+        idx_t = torch.tensor(indices, dtype=torch.long)
+        idx_t1 = torch.tensor(prev_indices, dtype=torch.long)
 
-    def __len__(self) -> int:
-        return self.Z.shape[0]
+        # Slice once on CPU, then move to device in one shot
+        self.x_t = dataset.input_df[idx_t].to(DEVICE)
+        self.c_t = dataset.context_df[idx_t].to(DEVICE)
+        self.y_t = dataset.emi_df[idx_t].to(DEVICE)
+        self.x_t1 = dataset.input_df[idx_t1].to(DEVICE)
+        self.c_t1 = dataset.context_df[idx_t1].to(DEVICE)
+        self.y_t1 = dataset.emi_df[idx_t1].to(DEVICE)
+        self.n = n
 
-    def __getitem__(self, idx: int):
-        prev = int(self._pair_idx[idx])
-        z_t = self.Z[idx]
-        c_t = self.context[idx]
-        y_t = self.emissions[idx]
-        z_t1 = self.Z[prev]
-        c_t1 = self.context[prev]
-        y_t1 = self.emissions[prev]
-        return z_t, c_t, y_t, z_t1, c_t1, y_t1
+    def batches(self, batch_size: int, shuffle: bool = False):
+        """Yields (x_t, c_t, y_t, x_t1, c_t1, y_t1) mini-batches.
+        All tensors are already on DEVICE — no transfer needed."""
+        if shuffle:
+            perm = torch.randperm(self.n, device=DEVICE)
+        else:
+            perm = torch.arange(self.n, device=DEVICE)
+
+        for start in range(0, self.n, batch_size):
+            idx = perm[start : start + batch_size]
+            if shuffle and len(idx) < batch_size:
+                continue  # drop last incomplete batch during training
+            yield (
+                self.x_t[idx], self.c_t[idx], self.y_t[idx],
+                self.x_t1[idx], self.c_t1[idx], self.y_t1[idx],
+            )
 
 
-# =============================================================================
-# Device-transfer helper
-# =============================================================================
-def _batch_to_device(batch: tuple[torch.Tensor, ...]) -> tuple[torch.Tensor, ...]:
-    """Move a whole batch tuple to DEVICE with non-blocking transfers.
-    When PIN_MEMORY is True (CUDA path), this overlaps the copy with
-    computation on the default stream."""
-    return tuple(b.to(DEVICE, non_blocking=PIN_MEMORY) for b in batch)
+class FlatGPUDataReduced:
+    """Same as FlatGPUData but with pre-reduced x features (PCA/KPCA/ICA)."""
+
+    def __init__(
+        self,
+        dataset: DatasetPrediction,
+        Z_all: torch.Tensor,
+        indices: list[int] | np.ndarray,
+    ):
+        indices = list(indices)
+        n = len(indices)
+
+        prev_indices = []
+        for i in indices:
+            geo = dataset.keys.iloc[i, 0]
+            year = dataset.keys.iloc[i, 1]
+            prev_idx = dataset.index_map.get((geo, year - 1))
+            prev_indices.append(prev_idx if prev_idx is not None else i)
+
+        idx_t = torch.tensor(indices, dtype=torch.long)
+        idx_t1 = torch.tensor(prev_indices, dtype=torch.long)
+
+        self.x_t = Z_all[idx_t].to(DEVICE)
+        self.c_t = dataset.context_df[idx_t].to(DEVICE)
+        self.y_t = dataset.emi_df[idx_t].to(DEVICE)
+        self.x_t1 = Z_all[idx_t1].to(DEVICE)
+        self.c_t1 = dataset.context_df[idx_t1].to(DEVICE)
+        self.y_t1 = dataset.emi_df[idx_t1].to(DEVICE)
+        self.n = n
+
+    def batches(self, batch_size: int, shuffle: bool = False):
+        if shuffle:
+            perm = torch.randperm(self.n, device=DEVICE)
+        else:
+            perm = torch.arange(self.n, device=DEVICE)
+        for start in range(0, self.n, batch_size):
+            idx = perm[start : start + batch_size]
+            if shuffle and len(idx) < batch_size:
+                continue
+            yield (
+                self.x_t[idx], self.c_t[idx], self.y_t[idx],
+                self.x_t1[idx], self.c_t1[idx], self.y_t1[idx],
+            )
+
+
+def _auto_batch_size(n_samples: int) -> int:
+    """Pick a batch size that keeps GPU utilisation high.
+    For small tabular datasets the whole set often fits in one batch."""
+    if n_samples <= 2048:
+        return n_samples  # full-batch — eliminates per-batch overhead
+    else:
+        return 2048
 
 
 # =============================================================================
@@ -351,29 +359,38 @@ def _get_pred_optimizer(params_or_groups, pred_config=None):
     return optimizer_cls(params_or_groups, lr=lr, weight_decay=wd, eps=1e-6)
 
 
+def _maybe_compile(model: nn.Module) -> nn.Module:
+    """Apply torch.compile when available and on CUDA."""
+    if USE_COMPILE:
+        try:
+            return torch.compile(model)
+        except Exception:
+            pass
+    return model
+
+
 # =============================================================================
-# Training loops
+# Training loops — use FlatGPUData (no DataLoader)
 # =============================================================================
-def _train_vae(vae, train_loader, val_loader, epochs, extract_x):
+def _train_vae(vae, train_data: FlatGPUData, val_data: FlatGPUData, epochs):
     config = _vae_config()
     wr, wd = config.vae_wr, config.vae_wd
+    bs = _auto_batch_size(train_data.n)
 
     optimizer = torch.optim.AdamW(
-        vae.parameters(),
-        lr=config.vae_lr,
-        weight_decay=config.vae_weight_decay,
-        eps=1e-6,
+        vae.parameters(), lr=config.vae_lr,
+        weight_decay=config.vae_weight_decay, eps=1e-6,
     )
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
 
-    pbar = tqdm(range(epochs), desc="    VAE", leave=True, ncols=100)
+    pbar = tqdm(range(epochs), desc="    VAE", leave=True, ncols=110)
     for epoch in pbar:
         vae.train()
         train_loss_sum = 0.0
-        n_train_batches = 0
-        for batch in train_loader:
-            x = extract_x(batch).to(DEVICE, non_blocking=PIN_MEMORY)
+        n_batches = 0
+        for batch in train_data.batches(bs, shuffle=True):
+            x = batch[0]  # x_t
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                 x_hat, mean, log_var = vae(x)
@@ -385,34 +402,30 @@ def _train_vae(vae, train_loader, val_loader, epochs, extract_x):
             scaler.step(optimizer)
             scaler.update()
             train_loss_sum += loss.item()
-            n_train_batches += 1
+            n_batches += 1
 
-        # Validation
         vae.eval()
         val_recon = 0.0
-        n_val_batches = 0
+        n_val = 0
         with torch.inference_mode():
-            for batch in val_loader:
-                x = extract_x(batch).to(DEVICE, non_blocking=PIN_MEMORY)
+            for batch in val_data.batches(val_data.n):
+                x = batch[0]
                 with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                     x_hat, mean, log_var = vae(x)
-                    recon, _kl = vae_loss(x, x_hat, mean, log_var)
+                    recon, _ = vae_loss(x, x_hat, mean, log_var)
                 val_recon += recon.item()
-                n_val_batches += 1
-        val_recon /= max(n_val_batches, 1)
-        train_avg = train_loss_sum / max(n_train_batches, 1)
+                n_val += 1
+        val_recon /= max(n_val, 1)
 
         should_stop = stopper.step(val_recon, vae)
         pbar.set_postfix(
-            train=f"{train_avg:.4f}",
+            trn=f"{train_loss_sum / max(n_batches, 1):.4f}",
             val=f"{val_recon:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
             pbar.set_description("    VAE (early stop)")
             pbar.close()
-            print(f"    VAE early stop at epoch {epoch + 1}/{epochs} "
-                  f"(no improvement for {PATIENCE} epochs)")
             break
 
     stopper.restore(vae)
@@ -420,7 +433,8 @@ def _train_vae(vae, train_loader, val_loader, epochs, extract_x):
 
 
 def _train_predictor_with_vae(
-    full_model, train_loader, val_loader, epochs, loss_mode="factor"
+    full_model, train_data: FlatGPUData, val_data: FlatGPUData,
+    epochs, loss_mode="factor",
 ):
     for p in full_model.encoder.parameters():
         p.requires_grad = False
@@ -429,6 +443,7 @@ def _train_predictor_with_vae(
 
     pred_config = _pred_config()
     lr = pred_config.pred_lr
+    bs = _auto_batch_size(train_data.n)
 
     optimizer = _get_pred_optimizer(
         [
@@ -438,17 +453,16 @@ def _train_predictor_with_vae(
         ],
         pred_config,
     )
-
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
-    pbar = tqdm(range(epochs), desc="    Pred+VAE+ctx", leave=True, ncols=100)
+    pbar = tqdm(range(epochs), desc="    Pred+VAE+ctx", leave=True, ncols=110)
     for epoch in pbar:
         full_model.train()
         train_loss_sum = 0.0
-        n_train_batches = 0
-        for batch in train_loader:
-            x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
+        n_batches = 0
+        for batch in train_data.batches(bs, shuffle=True):
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                 delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
@@ -462,41 +476,41 @@ def _train_predictor_with_vae(
             scaler.step(optimizer)
             scaler.update()
             train_loss_sum += loss.item()
-            n_train_batches += 1
+            n_batches += 1
 
         full_model.eval()
         val_loss = 0.0
-        n_val_batches = 0
+        n_val = 0
         with torch.inference_mode():
-            for batch in val_loader:
-                x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
+            for batch in val_data.batches(val_data.n):
+                x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
                 with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                     delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
                     delta_true = y_t - y_t1
                     val_loss += uncertainty_aware_mse_loss(
                         delta_true, delta_pred, unc, mode=loss_mode
                     ).item()
-                n_val_batches += 1
-        val_loss /= max(n_val_batches, 1)
-        train_avg = train_loss_sum / max(n_train_batches, 1)
+                n_val += 1
+        val_loss /= max(n_val, 1)
 
         should_stop = stopper.step(val_loss, full_model)
         pbar.set_postfix(
-            train=f"{train_avg:.4f}",
+            trn=f"{train_loss_sum / max(n_batches, 1):.4f}",
             val=f"{val_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
             pbar.set_description("    Pred+VAE+ctx (early stop)")
             pbar.close()
-            print(f"    Predictor (VAE+ctx) early stop at epoch {epoch + 1}/{epochs}")
             break
 
     stopper.restore(full_model)
     return full_model
 
 
-def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
+def _train_predictor_no_context(
+    full_model, train_data: FlatGPUData, val_data: FlatGPUData, epochs,
+):
     for p in full_model.vae.parameters():
         p.requires_grad = False
 
@@ -504,9 +518,10 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
     optimizer = _get_pred_optimizer(full_model.predictor.parameters(), pred_config)
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
+    bs = _auto_batch_size(train_data.n)
 
     def _forward_no_ctx(batch):
-        x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = _batch_to_device(batch)
+        x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = batch
         mean_t, logvar_t = full_model.encoder(x_t)
         mean_t1, logvar_t1 = full_model.encoder(x_t1)
         z_t = reparameterize(mean_t, torch.exp(0.5 * logvar_t))
@@ -516,13 +531,13 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
         delta_true = y_t - y_t1
         return delta_pred, unc, delta_true
 
-    pbar = tqdm(range(epochs), desc="    Pred(no-ctx)", leave=True, ncols=100)
+    pbar = tqdm(range(epochs), desc="    Pred(no-ctx)", leave=True, ncols=110)
     for epoch in pbar:
         full_model.train()
         full_model.vae.eval()
         train_loss_sum = 0.0
-        n_train_batches = 0
-        for batch in train_loader:
+        n_batches = 0
+        for batch in train_data.batches(bs, shuffle=True):
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                 delta_pred, unc, delta_true = _forward_no_ctx(batch)
@@ -535,32 +550,30 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
             scaler.step(optimizer)
             scaler.update()
             train_loss_sum += loss.item()
-            n_train_batches += 1
+            n_batches += 1
 
         full_model.eval()
         val_loss = 0.0
-        n_val_batches = 0
+        n_val = 0
         with torch.inference_mode():
-            for batch in val_loader:
+            for batch in val_data.batches(val_data.n):
                 with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                     delta_pred, unc, delta_true = _forward_no_ctx(batch)
                     val_loss += uncertainty_aware_mse_loss(
                         delta_true, delta_pred, unc, mode="factor"
                     ).item()
-                n_val_batches += 1
-        val_loss /= max(n_val_batches, 1)
-        train_avg = train_loss_sum / max(n_train_batches, 1)
+                n_val += 1
+        val_loss /= max(n_val, 1)
 
         should_stop = stopper.step(val_loss, full_model)
         pbar.set_postfix(
-            train=f"{train_avg:.4f}",
+            trn=f"{train_loss_sum / max(n_batches, 1):.4f}",
             val=f"{val_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
             pbar.set_description("    Pred(no-ctx) (early stop)")
             pbar.close()
-            print(f"    Predictor (no-ctx) early stop at epoch {epoch + 1}/{epochs}")
             break
 
     stopper.restore(full_model)
@@ -568,20 +581,22 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
 
 
 def _train_direct_predictor(
-    predictor, train_loader, val_loader, epochs, context_dim, loss_mode="factor"
+    predictor, train_data, val_data, epochs, context_dim, loss_mode="factor",
 ):
+    """Works with both FlatGPUData and FlatGPUDataReduced."""
     pred_config = _pred_config()
     optimizer = _get_pred_optimizer(predictor.parameters(), pred_config)
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
+    bs = _auto_batch_size(train_data.n)
 
-    pbar = tqdm(range(epochs), desc="    Direct pred", leave=True, ncols=100)
+    pbar = tqdm(range(epochs), desc="    Direct pred", leave=True, ncols=110)
     for epoch in pbar:
         predictor.train()
         train_loss_sum = 0.0
-        n_train_batches = 0
-        for batch in train_loader:
-            x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
+        n_batches = 0
+        for batch in train_data.batches(bs, shuffle=True):
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
             inp = torch.cat([x_t, c_t, x_t1, c_t1], dim=1)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(DEVICE, enabled=USE_AMP):
@@ -596,14 +611,14 @@ def _train_direct_predictor(
             scaler.step(optimizer)
             scaler.update()
             train_loss_sum += loss.item()
-            n_train_batches += 1
+            n_batches += 1
 
         predictor.eval()
         val_loss = 0.0
-        n_val_batches = 0
+        n_val = 0
         with torch.inference_mode():
-            for batch in val_loader:
-                x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
+            for batch in val_data.batches(val_data.n):
+                x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
                 inp = torch.cat([x_t, c_t, x_t1, c_t1], dim=1)
                 with torch.amp.autocast(DEVICE, enabled=USE_AMP):
                     delta_pred, unc = predictor(inp)
@@ -611,20 +626,18 @@ def _train_direct_predictor(
                     val_loss += uncertainty_aware_mse_loss(
                         delta_true, delta_pred, unc, mode=loss_mode
                     ).item()
-                n_val_batches += 1
-        val_loss /= max(n_val_batches, 1)
-        train_avg = train_loss_sum / max(n_train_batches, 1)
+                n_val += 1
+        val_loss /= max(n_val, 1)
 
         should_stop = stopper.step(val_loss, predictor)
         pbar.set_postfix(
-            train=f"{train_avg:.4f}",
+            trn=f"{train_loss_sum / max(n_batches, 1):.4f}",
             val=f"{val_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
             pbar.set_description("    Direct pred (early stop)")
             pbar.close()
-            print(f"    Direct predictor early stop at epoch {epoch + 1}/{epochs}")
             break
 
     stopper.restore(predictor)
@@ -636,16 +649,12 @@ def _fit_deterministic_reduction(method, X_train, n_components):
         reducer = PCA(n_components=n_components, random_state=SEED)
     elif method == "kpca":
         reducer = KernelPCA(
-            n_components=n_components,
-            kernel="rbf",
-            random_state=SEED,
-            fit_inverse_transform=False,
+            n_components=n_components, kernel="rbf",
+            random_state=SEED, fit_inverse_transform=False,
         )
     elif method == "ica":
         reducer = FastICA(
-            n_components=n_components,
-            random_state=SEED,
-            max_iter=500,
+            n_components=n_components, random_state=SEED, max_iter=500,
         )
     else:
         raise ValueError(f"Unknown method: {method}")
@@ -687,13 +696,14 @@ def _compute_metrics(preds, targets, uncs, loss_mode):
     return metrics
 
 
-def _evaluate_vae_variant(full_model, test_loader, loss_mode="factor"):
+def _evaluate_vae_variant(full_model, test_data: FlatGPUData, loss_mode="factor"):
     full_model.eval()
     all_preds, all_targets, all_uncs = [], [], []
     with torch.inference_mode():
-        for batch in test_loader:
-            x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
-            delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
+        for batch in test_data.batches(test_data.n):
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
+            with torch.amp.autocast(DEVICE, enabled=USE_AMP):
+                delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
             delta_true = y_t - y_t1
             all_preds.append(delta_pred.cpu())
             all_targets.append(delta_true.cpu())
@@ -704,18 +714,19 @@ def _evaluate_vae_variant(full_model, test_loader, loss_mode="factor"):
     return _compute_metrics(preds, targets, uncs, loss_mode)
 
 
-def _evaluate_vae_no_context(full_model, test_loader):
+def _evaluate_vae_no_context(full_model, test_data: FlatGPUData):
     full_model.eval()
     all_preds, all_targets, all_uncs = [], [], []
     with torch.inference_mode():
-        for batch in test_loader:
-            x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = _batch_to_device(batch)
-            mean_t, logvar_t = full_model.encoder(x_t)
-            mean_t1, logvar_t1 = full_model.encoder(x_t1)
-            z_t = reparameterize(mean_t, torch.exp(0.5 * logvar_t))
-            z_t1 = reparameterize(mean_t1, torch.exp(0.5 * logvar_t1))
-            inp = torch.cat([z_t, z_t1], dim=1)
-            delta_pred, unc = full_model.predictor(inp)
+        for batch in test_data.batches(test_data.n):
+            x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = batch
+            with torch.amp.autocast(DEVICE, enabled=USE_AMP):
+                mean_t, logvar_t = full_model.encoder(x_t)
+                mean_t1, logvar_t1 = full_model.encoder(x_t1)
+                z_t = reparameterize(mean_t, torch.exp(0.5 * logvar_t))
+                z_t1 = reparameterize(mean_t1, torch.exp(0.5 * logvar_t1))
+                inp = torch.cat([z_t, z_t1], dim=1)
+                delta_pred, unc = full_model.predictor(inp)
             delta_true = y_t - y_t1
             all_preds.append(delta_pred.cpu())
             all_targets.append(delta_true.cpu())
@@ -726,14 +737,16 @@ def _evaluate_vae_no_context(full_model, test_loader):
     return _compute_metrics(preds, targets, uncs, loss_mode="factor")
 
 
-def _evaluate_direct_variant(predictor, test_loader, loss_mode="factor"):
+def _evaluate_direct_variant(predictor, test_data, loss_mode="factor"):
+    """Works with both FlatGPUData and FlatGPUDataReduced."""
     predictor.eval()
     all_preds, all_targets, all_uncs = [], [], []
     with torch.inference_mode():
-        for batch in test_loader:
-            x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
+        for batch in test_data.batches(test_data.n):
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
             inp = torch.cat([x_t, c_t, x_t1, c_t1], dim=1)
-            delta_pred, unc = predictor(inp)
+            with torch.amp.autocast(DEVICE, enabled=USE_AMP):
+                delta_pred, unc = predictor(inp)
             delta_true = y_t - y_t1
             all_preds.append(delta_pred.cpu())
             all_targets.append(delta_true.cpu())
@@ -745,74 +758,53 @@ def _evaluate_direct_variant(predictor, test_loader, loss_mode="factor"):
 
 
 # =============================================================================
-# DataLoader factory
-# =============================================================================
-def _make_loaders(dataset, train_idx, val_idx, test_idx):
-    kwargs = {
-        "batch_size": BATCH_SIZE,
-        "num_workers": NUM_WORKERS,
-        "pin_memory": PIN_MEMORY,
-    }
-    train_l = DataLoader(
-        Subset(dataset, train_idx), shuffle=True, drop_last=True, **kwargs
-    )
-    val_l = DataLoader(Subset(dataset, val_idx), shuffle=False, **kwargs)
-    test_l = DataLoader(Subset(dataset, test_idx), shuffle=False, **kwargs)
-    return train_l, val_l, test_l
-
-
-# =============================================================================
 # Per-variant runners
 # =============================================================================
-def run_baseline(dataset, train_idx, val_idx, test_idx):
+def run_baseline(dataset, train_data, val_data, test_data):
     input_dim = dataset.input_df.shape[1]
     context_dim = dataset.context_df.shape[1]
+
     predictor = _build_predictor(
         input_dim=2 * (input_dim + context_dim), uncertainty=True
     ).to(DEVICE)
-    train_l, val_l, test_l = _make_loaders(dataset, train_idx, val_idx, test_idx)
+    predictor = _maybe_compile(predictor)
+
     predictor = _train_direct_predictor(
-        predictor, train_l, val_l, EPOCHS_DIRECT, context_dim
+        predictor, train_data, val_data, EPOCHS_DIRECT, context_dim,
     )
-    return _evaluate_direct_variant(predictor, test_l)
+    return _evaluate_direct_variant(predictor, test_data)
 
 
 def run_deterministic_latent(method, dataset, train_idx, val_idx, test_idx):
-    """Train a predictor on deterministically reduced features."""
     context_dim = dataset.context_df.shape[1]
 
-    # Fit reducer on training inputs only (no data leakage)
     X_train = dataset.input_df[train_idx].cpu().numpy()
     reducer = _fit_deterministic_reduction(method, X_train, REDUCTION_DIM)
 
-    # Transform all rows once (needed for t-1 pairing)
     Z_all = torch.tensor(
         reducer.transform(dataset.input_df.cpu().numpy()),
         dtype=torch.float32,
     )
 
-    pre_ds = PreReducedDataset(dataset, Z_all)
-    train_l, val_l, test_l = _make_loaders(pre_ds, train_idx, val_idx, test_idx)
+    train_data = FlatGPUDataReduced(dataset, Z_all, train_idx)
+    val_data = FlatGPUDataReduced(dataset, Z_all, val_idx)
+    test_data = FlatGPUDataReduced(dataset, Z_all, test_idx)
 
     predictor = _build_predictor(
         input_dim=2 * (REDUCTION_DIM + context_dim), uncertainty=True
     ).to(DEVICE)
+    predictor = _maybe_compile(predictor)
+
     predictor = _train_direct_predictor(
-        predictor, train_l, val_l, EPOCHS_PREDICTOR, context_dim
+        predictor, train_data, val_data, EPOCHS_PREDICTOR, context_dim,
     )
-    return _evaluate_direct_variant(predictor, test_l)
+    return _evaluate_direct_variant(predictor, test_data)
 
 
 # =============================================================================
 # Single fold orchestrator
 # =============================================================================
 def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
-    """Run all six model variants on a single fold.
-
-    Returns:
-        List of 6 metric dicts, one per variant.
-    """
-    # --- Internal train/val split from the training pool ---
     pool_indices = train_val_pool_idx.tolist()
     pool_size = len(pool_indices)
     val_size = int(pool_size * INTERNAL_VAL_RATIO)
@@ -825,8 +817,10 @@ def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
     train_idx = shuffled[val_size:]
     test_idx = test_idx.tolist()
 
-    # Shared DataLoaders for variants that use the original features
-    train_l, val_l, test_l = _make_loaders(dataset, train_idx, val_idx, test_idx)
+    # Build GPU-resident data once — shared across variants using original features
+    train_data = FlatGPUData(dataset, train_idx)
+    val_data = FlatGPUData(dataset, val_idx)
+    test_data = FlatGPUData(dataset, test_idx)
 
     results = []
 
@@ -839,16 +833,14 @@ def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
 
     # --- 1. Baseline ---
     print(f"  Fold {fold_id}: baseline...")
-    _record("baseline", run_baseline(dataset, train_idx, val_idx, test_idx))
+    _record("baseline", run_baseline(dataset, train_data, val_data, test_data))
 
     # --- 2-4. Deterministic reductions ---
     for method in ("pca", "kpca", "ica"):
         print(f"  Fold {fold_id}: {method}...")
         _record(
             method,
-            run_deterministic_latent(
-                method, dataset, train_idx, val_idx, test_idx,
-            ),
+            run_deterministic_latent(method, dataset, train_idx, val_idx, test_idx),
         )
 
     # --- 5-6. VAE variants (shared VAE training) ---
@@ -856,9 +848,9 @@ def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
     input_dim = dataset.input_df.shape[1]
     context_dim = dataset.context_df.shape[1]
     vae = _build_vae(input_dim).to(DEVICE)
-    vae = _train_vae(vae, train_l, val_l, EPOCHS_VAE, extract_x=lambda b: b[0])
+    vae = _maybe_compile(vae)
+    vae = _train_vae(vae, train_data, val_data, EPOCHS_VAE)
 
-    # Deep-copy VAE weights so the two predictor runs don't interfere
     vae_weights = {k: v.cpu().clone() for k, v in vae.state_dict().items()}
     vae_cfg = _vae_config()
     latent_dim = vae_cfg.vae_latent_dim
@@ -870,8 +862,9 @@ def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
     vae_nc.to(DEVICE)
     pred_nc = _build_predictor(input_dim=2 * latent_dim, uncertainty=True).to(DEVICE)
     fm_nc = FullPredictionModel(vae=vae_nc, predictor=pred_nc).to(DEVICE)
-    fm_nc = _train_predictor_no_context(fm_nc, train_l, val_l, EPOCHS_PREDICTOR)
-    _record("vae_no_context", _evaluate_vae_no_context(fm_nc, test_l))
+    fm_nc = _maybe_compile(fm_nc)
+    fm_nc = _train_predictor_no_context(fm_nc, train_data, val_data, EPOCHS_PREDICTOR)
+    _record("vae_no_context", _evaluate_vae_no_context(fm_nc, test_data))
     del fm_nc, vae_nc, pred_nc
 
     # 6. VAE + Context (Final)
@@ -883,9 +876,15 @@ def run_single_fold(fold_id, dataset, train_val_pool_idx, test_idx):
         input_dim=2 * (latent_dim + context_dim), uncertainty=True
     ).to(DEVICE)
     fm_f = FullPredictionModel(vae=vae_f, predictor=pred_f).to(DEVICE)
-    fm_f = _train_predictor_with_vae(fm_f, train_l, val_l, EPOCHS_PREDICTOR)
-    _record("vae_final", _evaluate_vae_variant(fm_f, test_l))
+    fm_f = _maybe_compile(fm_f)
+    fm_f = _train_predictor_with_vae(fm_f, train_data, val_data, EPOCHS_PREDICTOR)
+    _record("vae_final", _evaluate_vae_variant(fm_f, test_data))
     del fm_f, vae_f, pred_f, vae, vae_weights
+
+    # Free GPU-resident split data
+    del train_data, val_data, test_data
+    if DEVICE == "cuda":
+        torch.cuda.empty_cache()
 
     return results
 
@@ -913,12 +912,7 @@ def format_table(summary):
     ]:
         row_str = f"{symbol:<18}"
         for variant in [
-            "baseline",
-            "pca",
-            "kpca",
-            "ica",
-            "vae_no_context",
-            "vae_final",
+            "baseline", "pca", "kpca", "ica", "vae_no_context", "vae_final",
         ]:
             sub = summary[summary["variant"] == variant]
             mean_val = sub[metric].mean()
@@ -938,6 +932,7 @@ def main():
     print(f"Folds: {N_FOLDS}")
     print(f"Internal val ratio (from training pool): {INTERNAL_VAL_RATIO:.0%}")
     print(f"Device: {DEVICE}")
+    print(f"torch.compile: {USE_COMPILE}")
     print(f"Latent dim: {LATENT_DIM}")
     print(
         f"Epochs — VAE: {EPOCHS_VAE}, Predictor: {EPOCHS_PREDICTOR}, "
@@ -952,17 +947,24 @@ def main():
     torch.manual_seed(SEED)
 
     dataset = get_or_create_dataset()
-    _ensure_cpu_dataset(dataset)
-    print(f"Dataset: {len(dataset)} samples")
+    # Ensure base tensors are on CPU (FlatGPUData handles the GPU transfer)
+    for attr in ("input_df", "context_df", "emi_df"):
+        t = getattr(dataset, attr)
+        if t.is_cuda:
+            setattr(dataset, attr, t.cpu())
+
+    n_samples = len(dataset)
+    approx_train = int(n_samples * (1 - 1 / N_FOLDS) * (1 - INTERNAL_VAL_RATIO))
+    print(f"Dataset: {n_samples} samples")
     print(f"  Input features: {dataset.input_df.shape[1]}")
     print(f"  Context features: {dataset.context_df.shape[1]}")
     print(f"  Emission sectors: {dataset.emi_df.shape[1]}")
+    print(f"  Auto batch size (approx train): {_auto_batch_size(approx_train)}")
     print()
 
     all_results = []
     start_fold = 0
 
-    # Resume from checkpoint if available
     if CHECKPOINT_PATH.exists():
         print(f"Resuming from checkpoint: {CHECKPOINT_PATH}")
         checkpoint_df = pd.read_csv(CHECKPOINT_PATH)
@@ -974,17 +976,11 @@ def main():
             f"resuming from fold {start_fold}"
         )
 
-    # K-Fold split — deterministic via random_state
     kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
-    all_indices = np.arange(len(dataset))
+    all_indices = np.arange(n_samples)
     folds = list(kf.split(all_indices))
 
-    for fold_id in tqdm(
-        range(start_fold, N_FOLDS),
-        desc="Folds",
-        leave=True,
-        ncols=100,
-    ):
+    for fold_id in tqdm(range(start_fold, N_FOLDS), desc="Folds", ncols=100):
         train_pool, test_idx = folds[fold_id]
 
         print(f"\n{'=' * 50}")
@@ -1000,7 +996,6 @@ def main():
         if DEVICE == "cuda":
             torch.cuda.empty_cache()
 
-        # Save checkpoint after every fold
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(all_results).to_csv(CHECKPOINT_PATH, index=False)
 
