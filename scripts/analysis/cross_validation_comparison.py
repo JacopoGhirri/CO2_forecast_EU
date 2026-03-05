@@ -20,10 +20,8 @@ For VAE variants, we replicate the production pipeline exactly:
   - But include them in the optimizer at lr * 1e-3 (joint fine-tuning)
   - This matches train_predictor.py behaviour
 
-Training uses the **full k-1 folds** (no internal validation split).
-With PATIENCE = EPOCHS the stopper tracks the best training loss and
-restores those weights, but never stops early.  This maximises the
-training set size (~302 samples) to match production conditions (~322).
+A small internal validation split (10%) is used for early stopping /
+best-weight selection, keeping training set size close to production.
 
 Model variants
 --------------
@@ -82,10 +80,11 @@ from scripts.utils import (
 # =============================================================================
 SEED = 0
 N_FOLDS = 5
+INTERNAL_VAL_RATIO = 0.10  # small val split for early stopping (keeps ~272 for train)
 
 EPOCHS_VAE = 5000       # trained once on full data
-EPOCHS_PREDICTOR = 5000 # per fold (VAE variants with joint fine-tuning)
-EPOCHS_DIRECT = 5000    # per fold (baseline / det. reduction predictors)
+EPOCHS_PREDICTOR = 5000 # per fold
+EPOCHS_DIRECT = 5000    # per fold
 STOPPER_WINDOW = 50
 PATIENCE = 5000         # effectively no early stopping
 LATENT_DIM = 10
@@ -130,7 +129,7 @@ def _pred_config():
 
 
 # =============================================================================
-# EarlyStopper (tracks training loss — no validation split)
+# EarlyStopper
 # =============================================================================
 class EarlyStopper:
     def __init__(self, window: int = STOPPER_WINDOW, patience: int = PATIENCE):
@@ -141,8 +140,8 @@ class EarlyStopper:
         self.best_weights: dict | None = None
         self._epochs_without_improvement: int = 0
 
-    def step(self, loss: float, model: nn.Module) -> bool:
-        self.history.append(loss)
+    def step(self, val_loss: float, model: nn.Module) -> bool:
+        self.history.append(val_loss)
         smooth = sum(self.history) / len(self.history)
         if smooth < self.best_smooth:
             self.best_smooth = smooth
@@ -396,9 +395,8 @@ def load_pretrained_vae(dataset: DatasetPrediction) -> dict:
 
 # =============================================================================
 # Predictor training — direct (baseline, PCA, KPCA, ICA)
-# Train on full train fold, stopper tracks training loss.
 # =============================================================================
-def _train_predictor_direct(predictor, train_data, epochs, desc, loss_mode="factor"):
+def _train_predictor_direct(predictor, train_data, val_data, epochs, desc, loss_mode="factor"):
     pred_config = _pred_config()
     optimizer = _get_pred_optimizer(predictor.parameters(), pred_config)
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
@@ -424,10 +422,22 @@ def _train_predictor_direct(predictor, train_data, epochs, desc, loss_mode="fact
             scaler.update()
             trn_loss += loss.item(); nb += 1
 
-        avg_loss = trn_loss / max(nb, 1)
-        should_stop = stopper.step(avg_loss, predictor)
+        predictor.eval()
+        val_loss = 0.0; nv = 0
+        with torch.inference_mode():
+            for batch in val_data.batches(val_data.n):
+                x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
+                inp = torch.cat([x_t, c_t, x_t1, c_t1], dim=1)
+                with torch.amp.autocast(DEVICE, enabled=USE_AMP):
+                    delta_pred, unc = predictor(inp)
+                    delta_true = y_t - y_t1
+                    val_loss += uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode).item()
+                nv += 1
+        val_loss /= max(nv, 1)
+
+        should_stop = stopper.step(val_loss, predictor)
         pbar.set_postfix(
-            trn=f"{avg_loss:.4f}",
+            trn=f"{trn_loss/max(nb,1):.4f}", val=f"{val_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
@@ -441,7 +451,7 @@ def _train_predictor_direct(predictor, train_data, epochs, desc, loss_mode="fact
 # =============================================================================
 # VAE + Context predictor — replicates train_predictor.py exactly
 # =============================================================================
-def _train_predictor_with_vae(full_model, train_data, epochs, desc, loss_mode="factor"):
+def _train_predictor_with_vae(full_model, train_data, val_data, epochs, desc, loss_mode="factor"):
     for p in full_model.encoder.parameters():
         p.requires_grad = False
     for p in full_model.decoder.parameters():
@@ -486,10 +496,21 @@ def _train_predictor_with_vae(full_model, train_data, epochs, desc, loss_mode="f
             scaler.update()
             trn_loss += loss.item(); nb += 1
 
-        avg_loss = trn_loss / max(nb, 1)
-        should_stop = stopper.step(avg_loss, full_model)
+        full_model.eval()
+        val_loss = 0.0; nv = 0
+        with torch.inference_mode():
+            for batch in val_data.batches(val_data.n):
+                x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
+                with torch.amp.autocast(DEVICE, enabled=USE_AMP):
+                    delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
+                    delta_true = y_t - y_t1
+                    val_loss += uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode).item()
+                nv += 1
+        val_loss /= max(nv, 1)
+
+        should_stop = stopper.step(val_loss, full_model)
         pbar.set_postfix(
-            trn=f"{avg_loss:.4f}",
+            trn=f"{trn_loss/max(nb,1):.4f}", val=f"{val_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
@@ -503,7 +524,7 @@ def _train_predictor_with_vae(full_model, train_data, epochs, desc, loss_mode="f
 # =============================================================================
 # VAE no-context predictor
 # =============================================================================
-def _train_predictor_vae_no_ctx(full_model, train_data, epochs, loss_mode="factor"):
+def _train_predictor_vae_no_ctx(full_model, train_data, val_data, epochs, loss_mode="factor"):
     for p in full_model.vae.parameters():
         p.requires_grad = False
 
@@ -555,10 +576,19 @@ def _train_predictor_vae_no_ctx(full_model, train_data, epochs, loss_mode="facto
             scaler.update()
             trn_loss += loss.item(); nb += 1
 
-        avg_loss = trn_loss / max(nb, 1)
-        should_stop = stopper.step(avg_loss, full_model)
+        full_model.eval()
+        val_loss = 0.0; nv = 0
+        with torch.inference_mode():
+            for batch in val_data.batches(val_data.n):
+                with torch.amp.autocast(DEVICE, enabled=USE_AMP):
+                    delta_pred, unc, delta_true = _forward_no_ctx(batch)
+                    val_loss += uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode).item()
+                nv += 1
+        val_loss /= max(nv, 1)
+
+        should_stop = stopper.step(val_loss, full_model)
         pbar.set_postfix(
-            trn=f"{avg_loss:.4f}",
+            trn=f"{trn_loss/max(nb,1):.4f}", val=f"{val_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
@@ -656,12 +686,13 @@ def _evaluate_vae_no_ctx(full_model, test_data, loss_mode="factor"):
 
 
 # =============================================================================
-# Single fold — train on full k-1 folds, test on held-out fold
+# Single fold
 # =============================================================================
 def run_fold(
     fold_id: int,
     dataset: DatasetPrediction,
     train_idx: list[int],
+    val_idx: list[int],
     test_idx: list[int],
     vae_weights: dict,
     Z_pca: torch.Tensor,
@@ -677,6 +708,7 @@ def run_fold(
     results = []
 
     train_data = FlatGPUData(dataset, train_idx)
+    val_data = FlatGPUData(dataset, val_idx)
     test_data = FlatGPUData(dataset, test_idx)
 
     def _record(name, metrics):
@@ -689,7 +721,7 @@ def run_fold(
     # ---- 1. Baseline ----
     print(f"    baseline")
     pred = _build_predictor(2 * (input_dim + context_dim)).to(DEVICE)
-    pred = _train_predictor_direct(pred, train_data, EPOCHS_DIRECT, "    baseline", loss_mode)
+    pred = _train_predictor_direct(pred, train_data, val_data, EPOCHS_DIRECT, "    baseline", loss_mode)
     _record("baseline", _evaluate_direct(pred, test_data, loss_mode))
     del pred
 
@@ -697,11 +729,12 @@ def run_fold(
     for name, Z in [("pca", Z_pca), ("kpca", Z_kpca), ("ica", Z_ica)]:
         print(f"    {name}")
         tr_d = FlatGPUDataReduced(dataset, Z, train_idx)
+        va_d = FlatGPUDataReduced(dataset, Z, val_idx)
         te_d = FlatGPUDataReduced(dataset, Z, test_idx)
         pred = _build_predictor(2 * (REDUCTION_DIM + context_dim)).to(DEVICE)
-        pred = _train_predictor_direct(pred, tr_d, EPOCHS_PREDICTOR, f"    {name}", loss_mode)
+        pred = _train_predictor_direct(pred, tr_d, va_d, EPOCHS_PREDICTOR, f"    {name}", loss_mode)
         _record(name, _evaluate_direct(pred, te_d, loss_mode))
-        del pred, tr_d, te_d
+        del pred, tr_d, va_d, te_d
 
     # ---- 5. VAE no context ----
     print(f"    vae_no_context")
@@ -710,7 +743,7 @@ def run_fold(
     vae_nc.to(DEVICE)
     pred_nc = _build_predictor(2 * latent_dim).to(DEVICE)
     fm_nc = FullPredictionModel(vae=vae_nc, predictor=pred_nc).to(DEVICE)
-    fm_nc = _train_predictor_vae_no_ctx(fm_nc, train_data, EPOCHS_PREDICTOR, loss_mode)
+    fm_nc = _train_predictor_vae_no_ctx(fm_nc, train_data, val_data, EPOCHS_PREDICTOR, loss_mode)
     _record("vae_no_context", _evaluate_vae_no_ctx(fm_nc, test_data, loss_mode))
     del fm_nc, vae_nc, pred_nc
 
@@ -721,11 +754,11 @@ def run_fold(
     vae_f.to(DEVICE)
     pred_f = _build_predictor(2 * (latent_dim + context_dim)).to(DEVICE)
     fm_f = FullPredictionModel(vae=vae_f, predictor=pred_f).to(DEVICE)
-    fm_f = _train_predictor_with_vae(fm_f, train_data, EPOCHS_PREDICTOR, "    vae_final", loss_mode)
+    fm_f = _train_predictor_with_vae(fm_f, train_data, val_data, EPOCHS_PREDICTOR, "    vae_final", loss_mode)
     _record("vae_final", _evaluate_vae_variant(fm_f, test_data, loss_mode))
     del fm_f, vae_f, pred_f
 
-    del train_data, test_data
+    del train_data, val_data, test_data
     if DEVICE == "cuda":
         torch.cuda.empty_cache()
 
@@ -771,7 +804,7 @@ def main():
     print("Design: unsupervised representations fitted ONCE on full data;")
     print("        supervised predictor K-fold cross-validated per fold.")
     print("        VAE variants use joint fine-tuning (production pipeline).")
-    print("        Full k-1 folds used for training (no internal val split).")
+    print(f"        Internal val split: {INTERNAL_VAL_RATIO:.0%} for early stopping.")
     print()
     print(f"Folds: {N_FOLDS}")
     print(f"Device: {DEVICE}, AMP: {USE_AMP}")
@@ -823,7 +856,7 @@ def main():
     print(f"\n  All representations ready (dim={REDUCTION_DIM})")
 
     # ------------------------------------------------------------------
-    # 3. K-Fold CV — train on full k-1 folds, test on held-out fold
+    # 3. K-Fold CV
     # ------------------------------------------------------------------
     print(f"\n--- {N_FOLDS}-Fold Cross-Validation ---")
 
@@ -841,15 +874,22 @@ def main():
         start_fold = max(ckpt["fold"].unique()) + 1
 
     for fold_id in tqdm(range(start_fold, N_FOLDS), desc="Folds", ncols=100):
-        train_idx, test_idx = folds[fold_id]
-        train_idx = train_idx.tolist()
+        train_pool, test_idx = folds[fold_id]
+
+        # Internal train / val split from train pool
+        rng = np.random.default_rng(SEED + fold_id)
+        pool = train_pool.tolist()
+        rng.shuffle(pool)
+        val_size = int(len(pool) * INTERNAL_VAL_RATIO)
+        val_idx = pool[:val_size]
+        train_idx = pool[val_size:]
         test_idx = test_idx.tolist()
 
         print(f"\n  FOLD {fold_id + 1}/{N_FOLDS} "
-              f"(train={len(train_idx)}, test={len(test_idx)})")
+              f"(train={len(train_idx)}, val={len(val_idx)}, test={len(test_idx)})")
 
         fold_results = run_fold(
-            fold_id, dataset, train_idx, test_idx,
+            fold_id, dataset, train_idx, val_idx, test_idx,
             vae_weights, Z_pca, Z_kpca, Z_ica,
         )
         all_results.extend(fold_results)
