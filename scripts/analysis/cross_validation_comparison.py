@@ -20,9 +20,10 @@ For VAE variants, we replicate the production pipeline exactly:
   - But include them in the optimizer at lr * 1e-3 (joint fine-tuning)
   - This matches train_predictor.py behaviour
 
-This design isolates the question:
-    "Given a good initial representation, which approach yields the
-     best emission predictions?"
+Training uses the **full k-1 folds** (no internal validation split).
+With PATIENCE = EPOCHS the stopper tracks the best training loss and
+restores those weights, but never stops early.  This maximises the
+training set size (~302 samples) to match production conditions (~322).
 
 Model variants
 --------------
@@ -81,7 +82,6 @@ from scripts.utils import (
 # =============================================================================
 SEED = 0
 N_FOLDS = 5
-INTERNAL_VAL_RATIO = 0.15
 
 EPOCHS_VAE = 5000       # trained once on full data
 EPOCHS_PREDICTOR = 5000 # per fold (VAE variants with joint fine-tuning)
@@ -130,7 +130,7 @@ def _pred_config():
 
 
 # =============================================================================
-# EarlyStopper
+# EarlyStopper (tracks training loss — no validation split)
 # =============================================================================
 class EarlyStopper:
     def __init__(self, window: int = STOPPER_WINDOW, patience: int = PATIENCE):
@@ -141,8 +141,8 @@ class EarlyStopper:
         self.best_weights: dict | None = None
         self._epochs_without_improvement: int = 0
 
-    def step(self, val_loss: float, model: nn.Module) -> bool:
-        self.history.append(val_loss)
+    def step(self, loss: float, model: nn.Module) -> bool:
+        self.history.append(loss)
         smooth = sum(self.history) / len(self.history)
         if smooth < self.best_smooth:
             self.best_smooth = smooth
@@ -383,11 +383,8 @@ def train_vae_full(dataset: DatasetPrediction) -> VAEModel:
 
 def load_pretrained_vae(dataset: DatasetPrediction) -> dict:
     """Load production VAE weights; fall back to training from scratch.
-
-    Returns the state_dict (not the model) so each fold can initialize
-    a fresh copy from these weights.
+    Returns the state_dict (CPU) so each fold can initialize a fresh copy.
     """
-    input_dim = dataset.input_df.shape[1]
     model_path = Path("data/pytorch_models/vae_model.pth")
     if model_path.exists():
         print(f"  Loading pre-trained VAE from {model_path}")
@@ -399,9 +396,9 @@ def load_pretrained_vae(dataset: DatasetPrediction) -> dict:
 
 # =============================================================================
 # Predictor training — direct (baseline, PCA, KPCA, ICA)
+# Train on full train fold, stopper tracks training loss.
 # =============================================================================
-def _train_predictor_direct(predictor, train_data, val_data, epochs, desc, loss_mode="factor"):
-    """Standard predictor: input = cat(x_t, c_t, x_t1, c_t1)."""
+def _train_predictor_direct(predictor, train_data, epochs, desc, loss_mode="factor"):
     pred_config = _pred_config()
     optimizer = _get_pred_optimizer(predictor.parameters(), pred_config)
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
@@ -427,22 +424,10 @@ def _train_predictor_direct(predictor, train_data, val_data, epochs, desc, loss_
             scaler.update()
             trn_loss += loss.item(); nb += 1
 
-        predictor.eval()
-        val_loss = 0.0; nv = 0
-        with torch.inference_mode():
-            for batch in val_data.batches(val_data.n):
-                x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
-                inp = torch.cat([x_t, c_t, x_t1, c_t1], dim=1)
-                with torch.amp.autocast(DEVICE, enabled=USE_AMP):
-                    delta_pred, unc = predictor(inp)
-                    delta_true = y_t - y_t1
-                    val_loss += uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode).item()
-                nv += 1
-        val_loss /= max(nv, 1)
-
-        should_stop = stopper.step(val_loss, predictor)
+        avg_loss = trn_loss / max(nb, 1)
+        should_stop = stopper.step(avg_loss, predictor)
         pbar.set_postfix(
-            trn=f"{trn_loss/max(nb,1):.4f}", val=f"{val_loss:.4f}",
+            trn=f"{avg_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
@@ -454,22 +439,9 @@ def _train_predictor_direct(predictor, train_data, val_data, epochs, desc, loss_
 
 
 # =============================================================================
-# VAE + Context predictor training — replicates train_predictor.py EXACTLY
+# VAE + Context predictor — replicates train_predictor.py exactly
 # =============================================================================
-def _train_predictor_with_vae(
-    full_model: FullPredictionModel,
-    train_data: FlatGPUData,
-    val_data: FlatGPUData,
-    epochs: int,
-    desc: str,
-    loss_mode: str = "factor",
-):
-    """Replicates train_predictor.py:
-      - Freeze encoder/decoder via requires_grad = False
-      - But include them in optimizer at lr * 1e-3 (joint fine-tuning)
-      - Predictor at full lr
-    """
-    # Freeze (same as production)
+def _train_predictor_with_vae(full_model, train_data, epochs, desc, loss_mode="factor"):
     for p in full_model.encoder.parameters():
         p.requires_grad = False
     for p in full_model.decoder.parameters():
@@ -478,7 +450,6 @@ def _train_predictor_with_vae(
     pred_config = _pred_config()
     lr = pred_config.pred_lr
 
-    # Differential learning rates — matches train_predictor.py exactly
     optimizer_cls = {"adamw": torch.optim.AdamW, "adam": torch.optim.Adam,
                      "radam": torch.optim.RAdam}.get(
         pred_config.pred_optimizer.lower(), torch.optim.Adam
@@ -515,21 +486,10 @@ def _train_predictor_with_vae(
             scaler.update()
             trn_loss += loss.item(); nb += 1
 
-        full_model.eval()
-        val_loss = 0.0; nv = 0
-        with torch.inference_mode():
-            for batch in val_data.batches(val_data.n):
-                x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
-                with torch.amp.autocast(DEVICE, enabled=USE_AMP):
-                    delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
-                    delta_true = y_t - y_t1
-                    val_loss += uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode).item()
-                nv += 1
-        val_loss /= max(nv, 1)
-
-        should_stop = stopper.step(val_loss, full_model)
+        avg_loss = trn_loss / max(nb, 1)
+        should_stop = stopper.step(avg_loss, full_model)
         pbar.set_postfix(
-            trn=f"{trn_loss/max(nb,1):.4f}", val=f"{val_loss:.4f}",
+            trn=f"{avg_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
@@ -541,17 +501,9 @@ def _train_predictor_with_vae(
 
 
 # =============================================================================
-# VAE no-context predictor training
+# VAE no-context predictor
 # =============================================================================
-def _train_predictor_vae_no_ctx(
-    full_model: FullPredictionModel,
-    train_data: FlatGPUData,
-    val_data: FlatGPUData,
-    epochs: int,
-    loss_mode: str = "factor",
-):
-    """VAE no-context: predictor sees [z_t, z_t1] only, no context.
-    VAE encoder is frozen but included at lr*1e-3 (same convention)."""
+def _train_predictor_vae_no_ctx(full_model, train_data, epochs, loss_mode="factor"):
     for p in full_model.vae.parameters():
         p.requires_grad = False
 
@@ -603,19 +555,10 @@ def _train_predictor_vae_no_ctx(
             scaler.update()
             trn_loss += loss.item(); nb += 1
 
-        full_model.eval()
-        val_loss = 0.0; nv = 0
-        with torch.inference_mode():
-            for batch in val_data.batches(val_data.n):
-                with torch.amp.autocast(DEVICE, enabled=USE_AMP):
-                    delta_pred, unc, delta_true = _forward_no_ctx(batch)
-                    val_loss += uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode).item()
-                nv += 1
-        val_loss /= max(nv, 1)
-
-        should_stop = stopper.step(val_loss, full_model)
+        avg_loss = trn_loss / max(nb, 1)
+        should_stop = stopper.step(avg_loss, full_model)
         pbar.set_postfix(
-            trn=f"{trn_loss/max(nb,1):.4f}", val=f"{val_loss:.4f}",
+            trn=f"{avg_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
         )
         if should_stop:
@@ -659,7 +602,6 @@ def _compute_metrics(preds, targets, uncs, loss_mode="factor"):
 
 
 def _evaluate_direct(predictor, test_data, loss_mode="factor"):
-    """Evaluate predictor with input = cat(x_t, c_t, x_t1, c_t1)."""
     predictor.eval()
     all_p, all_t, all_u = [], [], []
     with torch.inference_mode():
@@ -677,7 +619,6 @@ def _evaluate_direct(predictor, test_data, loss_mode="factor"):
 
 
 def _evaluate_vae_variant(full_model, test_data, loss_mode="factor"):
-    """Evaluate FullPredictionModel (VAE + context)."""
     full_model.eval()
     all_p, all_t, all_u = [], [], []
     with torch.inference_mode():
@@ -694,7 +635,6 @@ def _evaluate_vae_variant(full_model, test_data, loss_mode="factor"):
 
 
 def _evaluate_vae_no_ctx(full_model, test_data, loss_mode="factor"):
-    """Evaluate FullPredictionModel with no context (z_t, z_t1 only)."""
     full_model.eval()
     all_p, all_t, all_u = [], [], []
     with torch.inference_mode():
@@ -715,31 +655,16 @@ def _evaluate_vae_no_ctx(full_model, test_data, loss_mode="factor"):
     )
 
 
-def _fit_deterministic_reduction(method, X_all_np, n_components):
-    if method == "pca":
-        reducer = PCA(n_components=n_components, random_state=SEED)
-    elif method == "kpca":
-        reducer = KernelPCA(n_components=n_components, kernel="rbf",
-                            random_state=SEED, fit_inverse_transform=False)
-    elif method == "ica":
-        reducer = FastICA(n_components=n_components, random_state=SEED, max_iter=500)
-    else:
-        raise ValueError(f"Unknown method: {method}")
-    reducer.fit(X_all_np)
-    return reducer
-
-
 # =============================================================================
-# Single fold
+# Single fold — train on full k-1 folds, test on held-out fold
 # =============================================================================
 def run_fold(
     fold_id: int,
     dataset: DatasetPrediction,
     train_idx: list[int],
-    val_idx: list[int],
     test_idx: list[int],
-    vae_weights: dict,          # pre-trained VAE state_dict (CPU)
-    Z_pca: torch.Tensor,       # (N, REDUCTION_DIM) CPU
+    vae_weights: dict,
+    Z_pca: torch.Tensor,
     Z_kpca: torch.Tensor,
     Z_ica: torch.Tensor,
 ):
@@ -751,9 +676,7 @@ def run_fold(
     loss_mode = pred_cfg.mode_loss
     results = []
 
-    # Build GPU data once per fold (shared across all variants using raw features)
     train_data = FlatGPUData(dataset, train_idx)
-    val_data = FlatGPUData(dataset, val_idx)
     test_data = FlatGPUData(dataset, test_idx)
 
     def _record(name, metrics):
@@ -763,50 +686,46 @@ def run_fold(
         if DEVICE == "cuda":
             torch.cuda.empty_cache()
 
-    # ---- 1. Baseline (raw features → predictor) ----
+    # ---- 1. Baseline ----
     print(f"    baseline")
     pred = _build_predictor(2 * (input_dim + context_dim)).to(DEVICE)
-    pred = _train_predictor_direct(pred, train_data, val_data, EPOCHS_DIRECT, "    baseline", loss_mode)
+    pred = _train_predictor_direct(pred, train_data, EPOCHS_DIRECT, "    baseline", loss_mode)
     _record("baseline", _evaluate_direct(pred, test_data, loss_mode))
     del pred
 
-    # ---- 2-4. Deterministic reductions (fitted on full data) ----
+    # ---- 2-4. Deterministic reductions ----
     for name, Z in [("pca", Z_pca), ("kpca", Z_kpca), ("ica", Z_ica)]:
         print(f"    {name}")
         tr_d = FlatGPUDataReduced(dataset, Z, train_idx)
-        va_d = FlatGPUDataReduced(dataset, Z, val_idx)
         te_d = FlatGPUDataReduced(dataset, Z, test_idx)
         pred = _build_predictor(2 * (REDUCTION_DIM + context_dim)).to(DEVICE)
-        pred = _train_predictor_direct(pred, tr_d, va_d, EPOCHS_PREDICTOR, f"    {name}", loss_mode)
+        pred = _train_predictor_direct(pred, tr_d, EPOCHS_PREDICTOR, f"    {name}", loss_mode)
         _record(name, _evaluate_direct(pred, te_d, loss_mode))
-        del pred, tr_d, va_d, te_d
+        del pred, tr_d, te_d
 
     # ---- 5. VAE no context ----
-    # Initialize from pre-trained VAE, then fine-tune encoder + predictor
     print(f"    vae_no_context")
     vae_nc = _build_vae(input_dim).to(DEVICE)
     vae_nc.load_state_dict(vae_weights)
     vae_nc.to(DEVICE)
     pred_nc = _build_predictor(2 * latent_dim).to(DEVICE)
     fm_nc = FullPredictionModel(vae=vae_nc, predictor=pred_nc).to(DEVICE)
-    fm_nc = _train_predictor_vae_no_ctx(fm_nc, train_data, val_data, EPOCHS_PREDICTOR, loss_mode)
+    fm_nc = _train_predictor_vae_no_ctx(fm_nc, train_data, EPOCHS_PREDICTOR, loss_mode)
     _record("vae_no_context", _evaluate_vae_no_ctx(fm_nc, test_data, loss_mode))
     del fm_nc, vae_nc, pred_nc
 
-    # ---- 6. VAE + Context (final model) — exact production pipeline ----
-    # Initialize from pre-trained VAE, joint fine-tuning with predictor
+    # ---- 6. VAE + Context (production pipeline) ----
     print(f"    vae_final")
     vae_f = _build_vae(input_dim).to(DEVICE)
     vae_f.load_state_dict(vae_weights)
     vae_f.to(DEVICE)
     pred_f = _build_predictor(2 * (latent_dim + context_dim)).to(DEVICE)
     fm_f = FullPredictionModel(vae=vae_f, predictor=pred_f).to(DEVICE)
-    fm_f = _train_predictor_with_vae(fm_f, train_data, val_data, EPOCHS_PREDICTOR, "    vae_final", loss_mode)
+    fm_f = _train_predictor_with_vae(fm_f, train_data, EPOCHS_PREDICTOR, "    vae_final", loss_mode)
     _record("vae_final", _evaluate_vae_variant(fm_f, test_data, loss_mode))
     del fm_f, vae_f, pred_f
 
-    # Clean up
-    del train_data, val_data, test_data
+    del train_data, test_data
     if DEVICE == "cuda":
         torch.cuda.empty_cache()
 
@@ -852,6 +771,7 @@ def main():
     print("Design: unsupervised representations fitted ONCE on full data;")
     print("        supervised predictor K-fold cross-validated per fold.")
     print("        VAE variants use joint fine-tuning (production pipeline).")
+    print("        Full k-1 folds used for training (no internal val split).")
     print()
     print(f"Folds: {N_FOLDS}")
     print(f"Device: {DEVICE}, AMP: {USE_AMP}")
@@ -903,7 +823,7 @@ def main():
     print(f"\n  All representations ready (dim={REDUCTION_DIM})")
 
     # ------------------------------------------------------------------
-    # 3. K-Fold CV
+    # 3. K-Fold CV — train on full k-1 folds, test on held-out fold
     # ------------------------------------------------------------------
     print(f"\n--- {N_FOLDS}-Fold Cross-Validation ---")
 
@@ -921,21 +841,15 @@ def main():
         start_fold = max(ckpt["fold"].unique()) + 1
 
     for fold_id in tqdm(range(start_fold, N_FOLDS), desc="Folds", ncols=100):
-        train_pool, test_idx = folds[fold_id]
-
-        rng = np.random.default_rng(SEED + fold_id)
-        pool = train_pool.tolist()
-        rng.shuffle(pool)
-        val_size = int(len(pool) * INTERNAL_VAL_RATIO)
-        val_idx = pool[:val_size]
-        train_idx = pool[val_size:]
+        train_idx, test_idx = folds[fold_id]
+        train_idx = train_idx.tolist()
         test_idx = test_idx.tolist()
 
         print(f"\n  FOLD {fold_id + 1}/{N_FOLDS} "
-              f"(train={len(train_idx)}, val={len(val_idx)}, test={len(test_idx)})")
+              f"(train={len(train_idx)}, test={len(test_idx)})")
 
         fold_results = run_fold(
-            fold_id, dataset, train_idx, val_idx, test_idx,
+            fold_id, dataset, train_idx, test_idx,
             vae_weights, Z_pca, Z_kpca, Z_ica,
         )
         all_results.extend(fold_results)
