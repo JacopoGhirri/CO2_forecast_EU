@@ -37,6 +37,7 @@ from scipy.stats import pearsonr
 from sklearn.decomposition import PCA, FastICA, KernelPCA
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, Dataset, Subset
+from tqdm import tqdm
 
 from config.data.output_configs import output_configs
 from scripts.elements.datasets import DatasetPrediction
@@ -366,8 +367,11 @@ def _train_vae(vae, train_loader, val_loader, epochs, extract_x):
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
 
-    for epoch in range(epochs):
+    pbar = tqdm(range(epochs), desc="    VAE", leave=True, ncols=100)
+    for epoch in pbar:
         vae.train()
+        train_loss_sum = 0.0
+        n_train_batches = 0
         for batch in train_loader:
             x = extract_x(batch).to(DEVICE, non_blocking=PIN_MEMORY)
             optimizer.zero_grad(set_to_none=True)
@@ -380,6 +384,8 @@ def _train_vae(vae, train_loader, val_loader, epochs, extract_x):
             torch.nn.utils.clip_grad_norm_(vae.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
+            train_loss_sum += loss.item()
+            n_train_batches += 1
 
         # Validation
         vae.eval()
@@ -394,9 +400,17 @@ def _train_vae(vae, train_loader, val_loader, epochs, extract_x):
                 val_recon += recon.item()
                 n_val_batches += 1
         val_recon /= max(n_val_batches, 1)
+        train_avg = train_loss_sum / max(n_train_batches, 1)
 
         should_stop = stopper.step(val_recon, vae)
+        pbar.set_postfix(
+            train=f"{train_avg:.4f}",
+            val=f"{val_recon:.4f}",
+            pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
+        )
         if should_stop:
+            pbar.set_description("    VAE (early stop)")
+            pbar.close()
             print(f"    VAE early stop at epoch {epoch + 1}/{epochs} "
                   f"(no improvement for {PATIENCE} epochs)")
             break
@@ -428,8 +442,11 @@ def _train_predictor_with_vae(
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
-    for epoch in range(epochs):
+    pbar = tqdm(range(epochs), desc="    Pred+VAE+ctx", leave=True, ncols=100)
+    for epoch in pbar:
         full_model.train()
+        train_loss_sum = 0.0
+        n_train_batches = 0
         for batch in train_loader:
             x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
             optimizer.zero_grad(set_to_none=True)
@@ -444,6 +461,8 @@ def _train_predictor_with_vae(
             torch.nn.utils.clip_grad_norm_(full_model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
+            train_loss_sum += loss.item()
+            n_train_batches += 1
 
         full_model.eval()
         val_loss = 0.0
@@ -459,9 +478,17 @@ def _train_predictor_with_vae(
                     ).item()
                 n_val_batches += 1
         val_loss /= max(n_val_batches, 1)
+        train_avg = train_loss_sum / max(n_train_batches, 1)
 
         should_stop = stopper.step(val_loss, full_model)
+        pbar.set_postfix(
+            train=f"{train_avg:.4f}",
+            val=f"{val_loss:.4f}",
+            pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
+        )
         if should_stop:
+            pbar.set_description("    Pred+VAE+ctx (early stop)")
+            pbar.close()
             print(f"    Predictor (VAE+ctx) early stop at epoch {epoch + 1}/{epochs}")
             break
 
@@ -489,9 +516,12 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
         delta_true = y_t - y_t1
         return delta_pred, unc, delta_true
 
-    for epoch in range(epochs):
+    pbar = tqdm(range(epochs), desc="    Pred(no-ctx)", leave=True, ncols=100)
+    for epoch in pbar:
         full_model.train()
         full_model.vae.eval()
+        train_loss_sum = 0.0
+        n_train_batches = 0
         for batch in train_loader:
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(DEVICE, enabled=USE_AMP):
@@ -504,6 +534,8 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
             torch.nn.utils.clip_grad_norm_(full_model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
+            train_loss_sum += loss.item()
+            n_train_batches += 1
 
         full_model.eval()
         val_loss = 0.0
@@ -517,9 +549,17 @@ def _train_predictor_no_context(full_model, train_loader, val_loader, epochs):
                     ).item()
                 n_val_batches += 1
         val_loss /= max(n_val_batches, 1)
+        train_avg = train_loss_sum / max(n_train_batches, 1)
 
         should_stop = stopper.step(val_loss, full_model)
+        pbar.set_postfix(
+            train=f"{train_avg:.4f}",
+            val=f"{val_loss:.4f}",
+            pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
+        )
         if should_stop:
+            pbar.set_description("    Pred(no-ctx) (early stop)")
+            pbar.close()
             print(f"    Predictor (no-ctx) early stop at epoch {epoch + 1}/{epochs}")
             break
 
@@ -535,8 +575,11 @@ def _train_direct_predictor(
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
-    for epoch in range(epochs):
+    pbar = tqdm(range(epochs), desc="    Direct pred", leave=True, ncols=100)
+    for epoch in pbar:
         predictor.train()
+        train_loss_sum = 0.0
+        n_train_batches = 0
         for batch in train_loader:
             x_t, c_t, y_t, x_t1, c_t1, y_t1 = _batch_to_device(batch)
             inp = torch.cat([x_t, c_t, x_t1, c_t1], dim=1)
@@ -552,6 +595,8 @@ def _train_direct_predictor(
             torch.nn.utils.clip_grad_norm_(predictor.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
+            train_loss_sum += loss.item()
+            n_train_batches += 1
 
         predictor.eval()
         val_loss = 0.0
@@ -568,9 +613,17 @@ def _train_direct_predictor(
                     ).item()
                 n_val_batches += 1
         val_loss /= max(n_val_batches, 1)
+        train_avg = train_loss_sum / max(n_train_batches, 1)
 
         should_stop = stopper.step(val_loss, predictor)
+        pbar.set_postfix(
+            train=f"{train_avg:.4f}",
+            val=f"{val_loss:.4f}",
+            pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
+        )
         if should_stop:
+            pbar.set_description("    Direct pred (early stop)")
+            pbar.close()
             print(f"    Direct predictor early stop at epoch {epoch + 1}/{epochs}")
             break
 
@@ -926,7 +979,12 @@ def main():
     all_indices = np.arange(len(dataset))
     folds = list(kf.split(all_indices))
 
-    for fold_id in range(start_fold, N_FOLDS):
+    for fold_id in tqdm(
+        range(start_fold, N_FOLDS),
+        desc="Folds",
+        leave=True,
+        ncols=100,
+    ):
         train_pool, test_idx = folds[fold_id]
 
         print(f"\n{'=' * 50}")
