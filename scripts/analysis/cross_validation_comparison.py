@@ -14,15 +14,15 @@ representation.  The supervised predictor (which maps representations →
 emission deltas) is still properly cross-validated: it is trained on
 k-1 folds and evaluated on the held-out fold.
 
-This design isolates the question:
-    "Given a good latent representation, which one yields better
-     emission predictions?"
-rather than:
-    "Can each method be robustly trained on a 30 % smaller dataset?"
+For VAE variants, we replicate the production pipeline exactly:
+  - Load pre-trained VAE weights as initialization
+  - Freeze encoder/decoder via requires_grad = False
+  - But include them in the optimizer at lr * 1e-3 (joint fine-tuning)
+  - This matches train_predictor.py behaviour
 
-The latter conflates representation quality with training-data
-sensitivity and is unfair to methods (like VAEs) that are sensitive
-to hyperparameters at small sample sizes.
+This design isolates the question:
+    "Given a good initial representation, which approach yields the
+     best emission predictions?"
 
 Model variants
 --------------
@@ -31,7 +31,7 @@ Model variants
   3. KPCA    — Kernel PCA (RBF) nonlinear reduction.
   4. ICA     — Independent Component Analysis.
   5. VAE (no context) — VAE encoding, predictor sees only latents.
-  6. VAE + Context     — VAE encoding + context variables (final model).
+  6. VAE + Context     — Full pipeline with joint fine-tuning (final model).
 
 Usage:
     python -m scripts.analysis.cross_validation_comparison
@@ -81,10 +81,10 @@ from scripts.utils import (
 # =============================================================================
 SEED = 0
 N_FOLDS = 5
-INTERNAL_VAL_RATIO = 0.15  # fraction of train pool for early-stop validation
+INTERNAL_VAL_RATIO = 0.15
 
 EPOCHS_VAE = 5000       # trained once on full data
-EPOCHS_PREDICTOR = 5000 # per fold
+EPOCHS_PREDICTOR = 5000 # per fold (VAE variants with joint fine-tuning)
 EPOCHS_DIRECT = 5000    # per fold (baseline / det. reduction predictors)
 STOPPER_WINDOW = 50
 PATIENCE = 5000         # effectively no early stopping
@@ -266,48 +266,6 @@ class FlatGPUDataReduced:
             )
 
 
-class FlatGPUDataLatent:
-    """GPU-resident data where x features are pre-encoded VAE latent means."""
-
-    def __init__(self, Z_all: torch.Tensor, dataset: DatasetPrediction, indices):
-        """
-        Args:
-            Z_all: (N, latent_dim) tensor of VAE latent means for ALL samples,
-                   already on DEVICE.
-            dataset: original dataset (for context, emissions, pairing).
-            indices: which samples to include in this split.
-        """
-        indices = list(indices)
-        prev_indices = []
-        for i in indices:
-            geo = dataset.keys.iloc[i, 0]
-            year = dataset.keys.iloc[i, 1]
-            prev_idx = dataset.index_map.get((geo, year - 1))
-            prev_indices.append(prev_idx if prev_idx is not None else i)
-
-        idx_t = torch.tensor(indices, dtype=torch.long)
-        idx_t1 = torch.tensor(prev_indices, dtype=torch.long)
-
-        self.z_t = Z_all[idx_t]
-        self.c_t = dataset.context_df[idx_t].to(DEVICE)
-        self.y_t = dataset.emi_df[idx_t].to(DEVICE)
-        self.z_t1 = Z_all[idx_t1]
-        self.c_t1 = dataset.context_df[idx_t1].to(DEVICE)
-        self.y_t1 = dataset.emi_df[idx_t1].to(DEVICE)
-        self.n = len(indices)
-
-    def batches(self, batch_size: int, shuffle: bool = False):
-        perm = torch.randperm(self.n, device=DEVICE) if shuffle else torch.arange(self.n, device=DEVICE)
-        for start in range(0, self.n, batch_size):
-            idx = perm[start : start + batch_size]
-            if shuffle and len(idx) < batch_size:
-                continue
-            yield (
-                self.z_t[idx], self.c_t[idx], self.y_t[idx],
-                self.z_t1[idx], self.c_t1[idx], self.y_t1[idx],
-            )
-
-
 def _auto_batch_size(n: int) -> int:
     return n if n <= 2048 else 2048
 
@@ -356,7 +314,7 @@ def _get_pred_optimizer(params, pred_config=None):
 
 
 # =============================================================================
-# Training: VAE (once, on full data)
+# Load pre-trained VAE weights
 # =============================================================================
 def train_vae_full(dataset: DatasetPrediction) -> VAEModel:
     """Train VAE on the entire dataset (unsupervised — no label leakage)."""
@@ -364,7 +322,6 @@ def train_vae_full(dataset: DatasetPrediction) -> VAEModel:
     vae = _build_vae(input_dim).to(DEVICE)
     config = _vae_config()
 
-    # 85 / 15 random split for VAE validation (mirrors train_vae.py)
     n = len(dataset)
     perm = torch.randperm(n, generator=torch.Generator().manual_seed(SEED))
     val_size = int(n * 0.15)
@@ -424,42 +381,27 @@ def train_vae_full(dataset: DatasetPrediction) -> VAEModel:
     return vae
 
 
-def load_pretrained_vae(dataset: DatasetPrediction) -> VAEModel:
-    """Try to load the production VAE; fall back to training from scratch."""
+def load_pretrained_vae(dataset: DatasetPrediction) -> dict:
+    """Load production VAE weights; fall back to training from scratch.
+
+    Returns the state_dict (not the model) so each fold can initialize
+    a fresh copy from these weights.
+    """
     input_dim = dataset.input_df.shape[1]
-    vae = _build_vae(input_dim).to(DEVICE)
     model_path = Path("data/pytorch_models/vae_model.pth")
     if model_path.exists():
         print(f"  Loading pre-trained VAE from {model_path}")
-        vae.load_state_dict(torch.load(model_path, map_location=DEVICE))
-        return vae
+        return torch.load(model_path, map_location="cpu")
     print("  No pre-trained VAE found — training on full data...")
-    return train_vae_full(dataset)
+    vae = train_vae_full(dataset)
+    return {k: v.cpu() for k, v in vae.state_dict().items()}
 
 
 # =============================================================================
-# Pre-encode entire dataset through frozen VAE
+# Predictor training — direct (baseline, PCA, KPCA, ICA)
 # =============================================================================
-@torch.inference_mode()
-def encode_dataset(vae: VAEModel, dataset: DatasetPrediction) -> torch.Tensor:
-    """Encode all samples through the frozen VAE encoder.
-
-    Returns Z_all (N, latent_dim) on DEVICE — the mean of the latent
-    posterior for each row.  We use means (not samples) so the
-    representation is deterministic and consistent across folds.
-    """
-    vae.eval()
-    X_all = dataset.input_df.to(DEVICE)
-    with torch.amp.autocast(DEVICE, enabled=USE_AMP):
-        mean, _ = vae.encoder(X_all)
-    return mean  # (N, latent_dim), on DEVICE
-
-
-# =============================================================================
-# Predictor training (shared by baseline, det. reductions, vae_final)
-# =============================================================================
-def _train_predictor(predictor, train_data, val_data, epochs, desc, loss_mode="factor"):
-    """Standard predictor training: input = cat(x_t, c_t, x_t1, c_t1)."""
+def _train_predictor_direct(predictor, train_data, val_data, epochs, desc, loss_mode="factor"):
+    """Standard predictor: input = cat(x_t, c_t, x_t1, c_t1)."""
     pred_config = _pred_config()
     optimizer = _get_pred_optimizer(predictor.parameters(), pred_config)
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
@@ -512,48 +454,80 @@ def _train_predictor(predictor, train_data, val_data, epochs, desc, loss_mode="f
 
 
 # =============================================================================
-# No-context predictor training: input = cat(z_t, z_t1) only
+# VAE + Context predictor training — replicates train_predictor.py EXACTLY
 # =============================================================================
-def _train_predictor_no_ctx(predictor, train_data, val_data, epochs, loss_mode="factor"):
+def _train_predictor_with_vae(
+    full_model: FullPredictionModel,
+    train_data: FlatGPUData,
+    val_data: FlatGPUData,
+    epochs: int,
+    desc: str,
+    loss_mode: str = "factor",
+):
+    """Replicates train_predictor.py:
+      - Freeze encoder/decoder via requires_grad = False
+      - But include them in optimizer at lr * 1e-3 (joint fine-tuning)
+      - Predictor at full lr
+    """
+    # Freeze (same as production)
+    for p in full_model.encoder.parameters():
+        p.requires_grad = False
+    for p in full_model.decoder.parameters():
+        p.requires_grad = False
+
     pred_config = _pred_config()
-    optimizer = _get_pred_optimizer(predictor.parameters(), pred_config)
+    lr = pred_config.pred_lr
+
+    # Differential learning rates — matches train_predictor.py exactly
+    optimizer_cls = {"adamw": torch.optim.AdamW, "adam": torch.optim.Adam,
+                     "radam": torch.optim.RAdam}.get(
+        pred_config.pred_optimizer.lower(), torch.optim.Adam
+    )
+    optimizer = optimizer_cls(
+        [
+            {"params": full_model.encoder.parameters(), "lr": lr * 1e-3},
+            {"params": full_model.decoder.parameters(), "lr": lr * 1e-3},
+            {"params": full_model.predictor.parameters(), "lr": lr},
+        ],
+        weight_decay=pred_config.pred_wd,
+        eps=1e-6,
+    )
+
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
     bs = _auto_batch_size(train_data.n)
 
-    pbar = tqdm(range(epochs), desc="    vae_no_ctx", leave=False, ncols=110)
+    pbar = tqdm(range(epochs), desc=desc, leave=False, ncols=110)
     for epoch in pbar:
-        predictor.train()
+        full_model.train()
         trn_loss = 0.0; nb = 0
         for batch in train_data.batches(bs, shuffle=True):
-            z_t, _c_t, y_t, z_t1, _c_t1, y_t1 = batch
-            inp = torch.cat([z_t, z_t1], dim=1)
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(DEVICE, enabled=USE_AMP):
-                delta_pred, unc = predictor(inp)
+                delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
                 delta_true = y_t - y_t1
                 loss = uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(predictor.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(full_model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
             trn_loss += loss.item(); nb += 1
 
-        predictor.eval()
+        full_model.eval()
         val_loss = 0.0; nv = 0
         with torch.inference_mode():
             for batch in val_data.batches(val_data.n):
-                z_t, _c_t, y_t, z_t1, _c_t1, y_t1 = batch
-                inp = torch.cat([z_t, z_t1], dim=1)
+                x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
                 with torch.amp.autocast(DEVICE, enabled=USE_AMP):
-                    dp, unc = predictor(inp)
-                    dt = y_t - y_t1
-                    val_loss += uncertainty_aware_mse_loss(dt, dp, unc, mode=loss_mode).item()
+                    delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
+                    delta_true = y_t - y_t1
+                    val_loss += uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode).item()
                 nv += 1
         val_loss /= max(nv, 1)
 
-        should_stop = stopper.step(val_loss, predictor)
+        should_stop = stopper.step(val_loss, full_model)
         pbar.set_postfix(
             trn=f"{trn_loss/max(nb,1):.4f}", val=f"{val_loss:.4f}",
             pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
@@ -561,9 +535,95 @@ def _train_predictor_no_ctx(predictor, train_data, val_data, epochs, loss_mode="
         if should_stop:
             break
 
-    stopper.restore(predictor)
+    stopper.restore(full_model)
     pbar.close()
-    return predictor
+    return full_model
+
+
+# =============================================================================
+# VAE no-context predictor training
+# =============================================================================
+def _train_predictor_vae_no_ctx(
+    full_model: FullPredictionModel,
+    train_data: FlatGPUData,
+    val_data: FlatGPUData,
+    epochs: int,
+    loss_mode: str = "factor",
+):
+    """VAE no-context: predictor sees [z_t, z_t1] only, no context.
+    VAE encoder is frozen but included at lr*1e-3 (same convention)."""
+    for p in full_model.vae.parameters():
+        p.requires_grad = False
+
+    pred_config = _pred_config()
+    lr = pred_config.pred_lr
+
+    optimizer_cls = {"adamw": torch.optim.AdamW, "adam": torch.optim.Adam,
+                     "radam": torch.optim.RAdam}.get(
+        pred_config.pred_optimizer.lower(), torch.optim.Adam
+    )
+    optimizer = optimizer_cls(
+        [
+            {"params": full_model.encoder.parameters(), "lr": lr * 1e-3},
+            {"params": full_model.predictor.parameters(), "lr": lr},
+        ],
+        weight_decay=pred_config.pred_wd,
+        eps=1e-6,
+    )
+
+    stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
+    scaler = torch.amp.GradScaler(enabled=USE_AMP)
+    bs = _auto_batch_size(train_data.n)
+
+    def _forward_no_ctx(batch):
+        x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = batch
+        mean_t, logvar_t = full_model.encoder(x_t)
+        mean_t1, logvar_t1 = full_model.encoder(x_t1)
+        z_t = reparameterize(mean_t, torch.exp(0.5 * logvar_t))
+        z_t1 = reparameterize(mean_t1, torch.exp(0.5 * logvar_t1))
+        inp = torch.cat([z_t, z_t1], dim=1)
+        delta_pred, unc = full_model.predictor(inp)
+        delta_true = y_t - y_t1
+        return delta_pred, unc, delta_true
+
+    pbar = tqdm(range(epochs), desc="    vae_no_ctx", leave=False, ncols=110)
+    for epoch in pbar:
+        full_model.train()
+        full_model.vae.eval()
+        trn_loss = 0.0; nb = 0
+        for batch in train_data.batches(bs, shuffle=True):
+            optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast(DEVICE, enabled=USE_AMP):
+                delta_pred, unc, delta_true = _forward_no_ctx(batch)
+                loss = uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(full_model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            trn_loss += loss.item(); nb += 1
+
+        full_model.eval()
+        val_loss = 0.0; nv = 0
+        with torch.inference_mode():
+            for batch in val_data.batches(val_data.n):
+                with torch.amp.autocast(DEVICE, enabled=USE_AMP):
+                    delta_pred, unc, delta_true = _forward_no_ctx(batch)
+                    val_loss += uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=loss_mode).item()
+                nv += 1
+        val_loss /= max(nv, 1)
+
+        should_stop = stopper.step(val_loss, full_model)
+        pbar.set_postfix(
+            trn=f"{trn_loss/max(nb,1):.4f}", val=f"{val_loss:.4f}",
+            pat=f"{stopper.epochs_without_improvement}/{PATIENCE}",
+        )
+        if should_stop:
+            break
+
+    stopper.restore(full_model)
+    pbar.close()
+    return full_model
 
 
 # =============================================================================
@@ -598,7 +658,7 @@ def _compute_metrics(preds, targets, uncs, loss_mode="factor"):
     return metrics
 
 
-def _evaluate_predictor(predictor, test_data, loss_mode="factor"):
+def _evaluate_direct(predictor, test_data, loss_mode="factor"):
     """Evaluate predictor with input = cat(x_t, c_t, x_t1, c_t1)."""
     predictor.eval()
     all_p, all_t, all_u = [], [], []
@@ -616,22 +676,57 @@ def _evaluate_predictor(predictor, test_data, loss_mode="factor"):
     )
 
 
-def _evaluate_predictor_no_ctx(predictor, test_data, loss_mode="factor"):
-    """Evaluate predictor with input = cat(z_t, z_t1) only."""
-    predictor.eval()
+def _evaluate_vae_variant(full_model, test_data, loss_mode="factor"):
+    """Evaluate FullPredictionModel (VAE + context)."""
+    full_model.eval()
     all_p, all_t, all_u = [], [], []
     with torch.inference_mode():
         for batch in test_data.batches(test_data.n):
-            z_t, _c_t, y_t, z_t1, _c_t1, y_t1 = batch
-            inp = torch.cat([z_t, z_t1], dim=1)
+            x_t, c_t, y_t, x_t1, c_t1, y_t1 = batch
             with torch.amp.autocast(DEVICE, enabled=USE_AMP):
-                dp, unc = predictor(inp)
+                delta_pred, unc, *_ = full_model(x_t, x_t1, c_t, c_t1)
+            dt = y_t - y_t1
+            all_p.append(delta_pred.cpu()); all_t.append(dt.cpu()); all_u.append(unc.cpu())
+    return _compute_metrics(
+        torch.cat(all_p).numpy(), torch.cat(all_t).numpy(),
+        torch.cat(all_u).numpy(), loss_mode,
+    )
+
+
+def _evaluate_vae_no_ctx(full_model, test_data, loss_mode="factor"):
+    """Evaluate FullPredictionModel with no context (z_t, z_t1 only)."""
+    full_model.eval()
+    all_p, all_t, all_u = [], [], []
+    with torch.inference_mode():
+        for batch in test_data.batches(test_data.n):
+            x_t, _c_t, y_t, x_t1, _c_t1, y_t1 = batch
+            with torch.amp.autocast(DEVICE, enabled=USE_AMP):
+                mean_t, logvar_t = full_model.encoder(x_t)
+                mean_t1, logvar_t1 = full_model.encoder(x_t1)
+                z_t = reparameterize(mean_t, torch.exp(0.5 * logvar_t))
+                z_t1 = reparameterize(mean_t1, torch.exp(0.5 * logvar_t1))
+                inp = torch.cat([z_t, z_t1], dim=1)
+                dp, unc = full_model.predictor(inp)
             dt = y_t - y_t1
             all_p.append(dp.cpu()); all_t.append(dt.cpu()); all_u.append(unc.cpu())
     return _compute_metrics(
         torch.cat(all_p).numpy(), torch.cat(all_t).numpy(),
         torch.cat(all_u).numpy(), loss_mode,
     )
+
+
+def _fit_deterministic_reduction(method, X_all_np, n_components):
+    if method == "pca":
+        reducer = PCA(n_components=n_components, random_state=SEED)
+    elif method == "kpca":
+        reducer = KernelPCA(n_components=n_components, kernel="rbf",
+                            random_state=SEED, fit_inverse_transform=False)
+    elif method == "ica":
+        reducer = FastICA(n_components=n_components, random_state=SEED, max_iter=500)
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    reducer.fit(X_all_np)
+    return reducer
 
 
 # =============================================================================
@@ -643,15 +738,23 @@ def run_fold(
     train_idx: list[int],
     val_idx: list[int],
     test_idx: list[int],
-    Z_vae: torch.Tensor,       # (N, latent_dim) on DEVICE
-    Z_pca: torch.Tensor,       # (N, REDUCTION_DIM) on CPU
+    vae_weights: dict,          # pre-trained VAE state_dict (CPU)
+    Z_pca: torch.Tensor,       # (N, REDUCTION_DIM) CPU
     Z_kpca: torch.Tensor,
     Z_ica: torch.Tensor,
 ):
     context_dim = dataset.context_df.shape[1]
     input_dim = dataset.input_df.shape[1]
-    latent_dim = Z_vae.shape[1]
+    vae_cfg = _vae_config()
+    pred_cfg = _pred_config()
+    latent_dim = vae_cfg.vae_latent_dim
+    loss_mode = pred_cfg.mode_loss
     results = []
+
+    # Build GPU data once per fold (shared across all variants using raw features)
+    train_data = FlatGPUData(dataset, train_idx)
+    val_data = FlatGPUData(dataset, val_idx)
+    test_data = FlatGPUData(dataset, test_idx)
 
     def _record(name, metrics):
         metrics["fold"] = fold_id
@@ -662,47 +765,51 @@ def run_fold(
 
     # ---- 1. Baseline (raw features → predictor) ----
     print(f"    baseline")
-    train_d = FlatGPUData(dataset, train_idx)
-    val_d = FlatGPUData(dataset, val_idx)
-    test_d = FlatGPUData(dataset, test_idx)
     pred = _build_predictor(2 * (input_dim + context_dim)).to(DEVICE)
-    pred = _train_predictor(pred, train_d, val_d, EPOCHS_DIRECT, "    baseline")
-    _record("baseline", _evaluate_predictor(pred, test_d))
-    del pred, train_d, val_d, test_d
+    pred = _train_predictor_direct(pred, train_data, val_data, EPOCHS_DIRECT, "    baseline", loss_mode)
+    _record("baseline", _evaluate_direct(pred, test_data, loss_mode))
+    del pred
 
     # ---- 2-4. Deterministic reductions (fitted on full data) ----
     for name, Z in [("pca", Z_pca), ("kpca", Z_kpca), ("ica", Z_ica)]:
         print(f"    {name}")
-        train_d = FlatGPUDataReduced(dataset, Z, train_idx)
-        val_d = FlatGPUDataReduced(dataset, Z, val_idx)
-        test_d = FlatGPUDataReduced(dataset, Z, test_idx)
+        tr_d = FlatGPUDataReduced(dataset, Z, train_idx)
+        va_d = FlatGPUDataReduced(dataset, Z, val_idx)
+        te_d = FlatGPUDataReduced(dataset, Z, test_idx)
         pred = _build_predictor(2 * (REDUCTION_DIM + context_dim)).to(DEVICE)
-        pred = _train_predictor(pred, train_d, val_d, EPOCHS_PREDICTOR, f"    {name}")
-        _record(name, _evaluate_predictor(pred, test_d))
-        del pred, train_d, val_d, test_d
+        pred = _train_predictor_direct(pred, tr_d, va_d, EPOCHS_PREDICTOR, f"    {name}", loss_mode)
+        _record(name, _evaluate_direct(pred, te_d, loss_mode))
+        del pred, tr_d, va_d, te_d
 
     # ---- 5. VAE no context ----
+    # Initialize from pre-trained VAE, then fine-tune encoder + predictor
     print(f"    vae_no_context")
-    train_d = FlatGPUDataLatent(Z_vae, dataset, train_idx)
-    val_d = FlatGPUDataLatent(Z_vae, dataset, val_idx)
-    test_d = FlatGPUDataLatent(Z_vae, dataset, test_idx)
-    pred = _build_predictor(2 * latent_dim).to(DEVICE)
-    pred = _train_predictor_no_ctx(pred, train_d, val_d, EPOCHS_PREDICTOR)
-    _record("vae_no_context", _evaluate_predictor_no_ctx(pred, test_d))
-    del pred, train_d, val_d, test_d
+    vae_nc = _build_vae(input_dim).to(DEVICE)
+    vae_nc.load_state_dict(vae_weights)
+    vae_nc.to(DEVICE)
+    pred_nc = _build_predictor(2 * latent_dim).to(DEVICE)
+    fm_nc = FullPredictionModel(vae=vae_nc, predictor=pred_nc).to(DEVICE)
+    fm_nc = _train_predictor_vae_no_ctx(fm_nc, train_data, val_data, EPOCHS_PREDICTOR, loss_mode)
+    _record("vae_no_context", _evaluate_vae_no_ctx(fm_nc, test_data, loss_mode))
+    del fm_nc, vae_nc, pred_nc
 
-    # ---- 6. VAE + Context (final model) ----
+    # ---- 6. VAE + Context (final model) — exact production pipeline ----
+    # Initialize from pre-trained VAE, joint fine-tuning with predictor
     print(f"    vae_final")
-    train_d = FlatGPUDataLatent(Z_vae, dataset, train_idx)
-    val_d = FlatGPUDataLatent(Z_vae, dataset, val_idx)
-    test_d = FlatGPUDataLatent(Z_vae, dataset, test_idx)
-    pred = _build_predictor(2 * (latent_dim + context_dim)).to(DEVICE)
-    pred = _train_predictor(pred, train_d, val_d, EPOCHS_PREDICTOR, "    vae_final")
-    _record("vae_final", _evaluate_predictor(pred, test_d))
-    del pred, train_d, val_d, test_d
+    vae_f = _build_vae(input_dim).to(DEVICE)
+    vae_f.load_state_dict(vae_weights)
+    vae_f.to(DEVICE)
+    pred_f = _build_predictor(2 * (latent_dim + context_dim)).to(DEVICE)
+    fm_f = FullPredictionModel(vae=vae_f, predictor=pred_f).to(DEVICE)
+    fm_f = _train_predictor_with_vae(fm_f, train_data, val_data, EPOCHS_PREDICTOR, "    vae_final", loss_mode)
+    _record("vae_final", _evaluate_vae_variant(fm_f, test_data, loss_mode))
+    del fm_f, vae_f, pred_f
 
+    # Clean up
+    del train_data, val_data, test_data
     if DEVICE == "cuda":
         torch.cuda.empty_cache()
+
     return results
 
 
@@ -743,7 +850,8 @@ def main():
     print("=" * 70)
     print()
     print("Design: unsupervised representations fitted ONCE on full data;")
-    print("        only the supervised predictor is K-fold cross-validated.")
+    print("        supervised predictor K-fold cross-validated per fold.")
+    print("        VAE variants use joint fine-tuning (production pipeline).")
     print()
     print(f"Folds: {N_FOLDS}")
     print(f"Device: {DEVICE}, AMP: {USE_AMP}")
@@ -769,7 +877,7 @@ def main():
           f"{dataset.emi_df.shape[1]} emission sectors")
 
     # ------------------------------------------------------------------
-    # 2. Fit all unsupervised representations on FULL data (no labels)
+    # 2. Fit all unsupervised representations on FULL data
     # ------------------------------------------------------------------
     print("\n--- Fitting unsupervised representations on full data ---")
 
@@ -790,20 +898,14 @@ def main():
     Z_ica = torch.tensor(ica.transform(X_all_np), dtype=torch.float32)
 
     print("  VAE...")
-    vae = load_pretrained_vae(dataset)
-    Z_vae = encode_dataset(vae, dataset)  # (N, latent_dim) on DEVICE
-    latent_dim = Z_vae.shape[1]
-    del vae
-    if DEVICE == "cuda":
-        torch.cuda.empty_cache()
+    vae_weights = load_pretrained_vae(dataset)
 
-    print(f"\n  Representation dims: PCA={Z_pca.shape[1]}, "
-          f"KPCA={Z_kpca.shape[1]}, ICA={Z_ica.shape[1]}, VAE={latent_dim}")
+    print(f"\n  All representations ready (dim={REDUCTION_DIM})")
 
     # ------------------------------------------------------------------
-    # 3. K-Fold CV — only the predictor is trained / evaluated per fold
+    # 3. K-Fold CV
     # ------------------------------------------------------------------
-    print(f"\n--- {N_FOLDS}-Fold Cross-Validation (predictor only) ---")
+    print(f"\n--- {N_FOLDS}-Fold Cross-Validation ---")
 
     kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
     all_indices = np.arange(n)
@@ -834,7 +936,7 @@ def main():
 
         fold_results = run_fold(
             fold_id, dataset, train_idx, val_idx, test_idx,
-            Z_vae, Z_pca, Z_kpca, Z_ica,
+            vae_weights, Z_pca, Z_kpca, Z_ica,
         )
         all_results.extend(fold_results)
 
@@ -855,7 +957,8 @@ def main():
     print("\n" + "=" * 70)
     print("TABLE 3: Representation quality comparison")
     print(f"Predictor cross-validated ({N_FOLDS}-fold); "
-          f"representations fitted on full data (unsupervised).")
+          f"representations pre-trained on full data (unsupervised).")
+    print("VAE variants include joint fine-tuning (production pipeline).")
     print("=" * 70)
     print(format_table(results_df))
 
