@@ -422,7 +422,7 @@ def _generate_figure(
         show_flags=show_flags,
     )
 
-    for ax, label in zip(axes, ["a", "b"], strict=False):
+    for ax, label in zip(axes, ["a", "b"]):
         ax.text(
             -0.02,
             1.05,
