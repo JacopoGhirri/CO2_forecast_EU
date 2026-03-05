@@ -384,7 +384,7 @@ def _train_vae(vae, train_data: FlatGPUData, val_data: FlatGPUData, epochs):
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
 
-    pbar = tqdm(range(epochs), desc="    VAE", leave=True, ncols=110)
+    pbar = tqdm(range(epochs), desc="    VAE", leave=False, ncols=110)
     for epoch in pbar:
         vae.train()
         train_loss_sum = 0.0
@@ -456,7 +456,7 @@ def _train_predictor_with_vae(
     stopper = EarlyStopper(window=STOPPER_WINDOW, patience=PATIENCE)
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
 
-    pbar = tqdm(range(epochs), desc="    Pred+VAE+ctx", leave=True, ncols=110)
+    pbar = tqdm(range(epochs), desc="    Pred+VAE+ctx", leave=False, ncols=110)
     for epoch in pbar:
         full_model.train()
         train_loss_sum = 0.0
@@ -531,7 +531,7 @@ def _train_predictor_no_context(
         delta_true = y_t - y_t1
         return delta_pred, unc, delta_true
 
-    pbar = tqdm(range(epochs), desc="    Pred(no-ctx)", leave=True, ncols=110)
+    pbar = tqdm(range(epochs), desc="    Pred(no-ctx)", leave=False, ncols=110)
     for epoch in pbar:
         full_model.train()
         full_model.vae.eval()
@@ -590,7 +590,7 @@ def _train_direct_predictor(
     scaler = torch.amp.GradScaler(enabled=USE_AMP)
     bs = _auto_batch_size(train_data.n)
 
-    pbar = tqdm(range(epochs), desc="    Direct pred", leave=True, ncols=110)
+    pbar = tqdm(range(epochs), desc="    Direct pred", leave=False, ncols=110)
     for epoch in pbar:
         predictor.train()
         train_loss_sum = 0.0
