@@ -288,12 +288,13 @@ def load_mc_projections(dataset, population_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_oecd_projections() -> pd.DataFrame:
-    """Load OECD emission projections."""
+    """Load full OECD emission projections dataset (all years)."""
     if not OECD_PATH.exists():
         print(f"Warning: OECD data not found at {OECD_PATH}")
         return pd.DataFrame()
 
     oecd_df = pd.read_csv(OECD_PATH)
+
     oecd_df = oecd_df[["REF_AREA", "SCENARIO", "TIME_PERIOD", "OBS_VALUE"]].copy()
     oecd_df = oecd_df.rename(
         columns={
@@ -303,15 +304,17 @@ def load_oecd_projections() -> pd.DataFrame:
             "OBS_VALUE": "value",
         }
     )
+
     oecd_df["value"] = pd.to_numeric(oecd_df["value"], errors="coerce")
     oecd_df = oecd_df.dropna(subset=["value"])
+
+    # Convert ISO3 → ISO2
     oecd_df["geo"] = oecd_df["geo_iso3"].map(ISO3_TO_ISO2)
 
-    # Filter to 2030 and convert to tonnes
-    oecd_2030 = oecd_df[oecd_df["year"] == 2030].copy()
-    oecd_2030["value_tonnes"] = oecd_2030["value"] * 1e6
+    # Keep only mapped countries
+    oecd_df = oecd_df[~oecd_df["geo"].isna()].copy()
 
-    return oecd_2030
+    return oecd_df
 
 
 def load_eea_projections() -> pd.DataFrame:
@@ -751,13 +754,24 @@ def main():
     forecast_summary = load_mc_projections(dataset, population_df)
 
     # Load external projections
-    oecd_2030 = load_oecd_projections()
     eea_2030 = load_eea_projections()
     pypsa_2030 = load_pypsa_projections()
+    oecd_full = load_oecd_projections()
+
+    # Create 2030 subset for comparison only
+    oecd_2030 = (
+        oecd_full[oecd_full["year"] == 2030].copy()
+        if not oecd_full.empty
+        else pd.DataFrame()
+    )
+
+    # Convert to tonnes for 2030 subset
+    if not oecd_2030.empty:
+        oecd_2030["value_tonnes"] = oecd_2030["value"] * 1e6
 
     # Compute targets
     print("Computing targets...")
-    esr_targets = compute_targets(oecd_2030 if not oecd_2030.empty else pd.DataFrame())
+    esr_targets = compute_targets(oecd_full) if not oecd_full.empty else pd.DataFrame()
 
     # Build comparison dataframe
     print("Building comparison data...")
