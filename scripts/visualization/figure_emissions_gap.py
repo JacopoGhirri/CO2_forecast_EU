@@ -1,13 +1,12 @@
 """
-Figure 1: Emissions Gap Scatter Plot.
+Figure 1 (Revised): Emissions Gap in Absolute Mt CO2.
 
-Visualizes the deviation of projected 2030 emissions from national climate targets
-for each EU member state, comparing this study's projections against OECD, EEA,
-and PyPSA scenarios.
+Shows deviation from 2030 targets in MEGATONNES (Mt CO2), not percentages.
+This better reflects the real-world importance of each country's gap.
 
-This script generates a lollipop chart showing how far each country is from
-meeting its Fit for 55 / ESR burden-sharing target, with multiple projection
-sources for comparison.
+Based on the corrected baseline where load_oecd_projections() returns
+the full OECD dataset (all years), and compute_targets() receives the
+full dataset to access 2005 and 1990 baselines.
 
 Usage:
     python -m scripts.visualization.figure_emissions_gap
@@ -18,8 +17,10 @@ Outputs:
     - outputs/figures/fig1_emissions_gap.svg
     - outputs/tables/fig1_summary_table.csv
 
-Reference:
-    Figure 1 in the paper shows deviation from 2030 targets across EU27.
+Changes from original:
+    - X-axis now shows Mt CO2 deviation instead of % deviation
+    - Sorting by absolute Mt gap (Germany's large gap dominates over Ireland)
+    - All external projections also converted to Mt CO2 deviation
 """
 
 import pickle
@@ -54,65 +55,20 @@ OUTPUT_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Po
 
 # EU27 country codes
 EU27_COUNTRIES = [
-    "AT",
-    "BE",
-    "BG",
-    "HR",
-    "CY",
-    "CZ",
-    "DK",
-    "EE",
-    "EL",
-    "FI",
-    "FR",
-    "DE",
-    "HU",
-    "IE",
-    "IT",
-    "LV",
-    "LT",
-    "LU",
-    "MT",
-    "NL",
-    "PL",
-    "PT",
-    "RO",
-    "SK",
-    "SI",
-    "ES",
-    "SE",
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI", "FR", "DE",
+    "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK",
+    "SI", "ES", "SE",
 ]
 
 # Country code to full name mapping
 COUNTRY_NAMES = {
-    "AT": "Austria",
-    "BE": "Belgium",
-    "BG": "Bulgaria",
-    "HR": "Croatia",
-    "CY": "Cyprus",
-    "CZ": "Czechia",
-    "DK": "Denmark",
-    "EE": "Estonia",
-    "FI": "Finland",
-    "FR": "France",
-    "DE": "Germany",
-    "EL": "Greece",
-    "HU": "Hungary",
-    "IE": "Ireland",
-    "IT": "Italy",
-    "LV": "Latvia",
-    "LT": "Lithuania",
-    "LU": "Luxembourg",
-    "MT": "Malta",
-    "NL": "Netherlands",
-    "PL": "Poland",
-    "PT": "Portugal",
-    "RO": "Romania",
-    "SK": "Slovakia",
-    "SI": "Slovenia",
-    "ES": "Spain",
-    "SE": "Sweden",
-    "EU27": "EU27",
+    "AT": "Austria", "BE": "Belgium", "BG": "Bulgaria", "HR": "Croatia",
+    "CY": "Cyprus", "CZ": "Czechia", "DK": "Denmark", "EE": "Estonia",
+    "FI": "Finland", "FR": "France", "DE": "Germany", "EL": "Greece",
+    "HU": "Hungary", "IE": "Ireland", "IT": "Italy", "LV": "Latvia",
+    "LT": "Lithuania", "LU": "Luxembourg", "MT": "Malta", "NL": "Netherlands",
+    "PL": "Poland", "PT": "Portugal", "RO": "Romania", "SK": "Slovakia",
+    "SI": "Slovenia", "ES": "Spain", "SE": "Sweden", "EU27": "EU27",
 }
 
 # PyPSA country code mapping (Greece GR -> EL)
@@ -120,65 +76,22 @@ PYPSA_COUNTRY_MAPPING = {"GR": "EL"}
 
 # ISO3 to ISO2 mapping for OECD data
 ISO3_TO_ISO2 = {
-    "AUT": "AT",
-    "BEL": "BE",
-    "BGR": "BG",
-    "HRV": "HR",
-    "CYP": "CY",
-    "CZE": "CZ",
-    "DNK": "DK",
-    "EST": "EE",
-    "FIN": "FI",
-    "FRA": "FR",
-    "DEU": "DE",
-    "HUN": "HU",
-    "IRL": "IE",
-    "ITA": "IT",
-    "LVA": "LV",
-    "LTU": "LT",
-    "LUX": "LU",
-    "MLT": "MT",
-    "NLD": "NL",
-    "POL": "PL",
-    "PRT": "PT",
-    "ROU": "RO",
-    "SVK": "SK",
-    "SVN": "SI",
-    "ESP": "ES",
-    "SWE": "SE",
-    "GRC": "EL",
-    "EU27": "EU27",
+    "AUT": "AT", "BEL": "BE", "BGR": "BG", "HRV": "HR", "CYP": "CY",
+    "CZE": "CZ", "DNK": "DK", "EST": "EE", "FIN": "FI", "FRA": "FR",
+    "DEU": "DE", "HUN": "HU", "IRL": "IE", "ITA": "IT", "LVA": "LV",
+    "LTU": "LT", "LUX": "LU", "MLT": "MT", "NLD": "NL", "POL": "PL",
+    "PRT": "PT", "ROU": "RO", "SVK": "SK", "SVN": "SI", "ESP": "ES",
+    "SWE": "SE", "GRC": "EL", "EU27": "EU27",
 }
 
 # ESR 2030 reduction targets (% change from 2005 baseline)
 ESR_TARGETS_2030 = {
-    "AT": -48.0,
-    "BE": -47.0,
-    "BG": -10.0,
-    "HR": -16.7,
-    "CY": -32.0,
-    "CZ": -26.0,
-    "DK": -50.0,
-    "EE": -24.0,
-    "FI": -50.0,
-    "FR": -47.5,
-    "DE": -50.0,
-    "EL": -22.7,
-    "HU": -18.7,
-    "IE": -42.0,
-    "IT": -43.7,
-    "LV": -17.0,
-    "LT": -21.0,
-    "LU": -50.0,
-    "MT": -19.0,
-    "NL": -48.0,
-    "PL": -17.7,
-    "PT": -28.7,
-    "RO": -12.7,
-    "SK": -22.7,
-    "SI": -27.0,
-    "ES": -37.7,
-    "SE": -50.0,
+    "AT": -48.0, "BE": -47.0, "BG": -10.0, "HR": -16.7, "CY": -32.0,
+    "CZ": -26.0, "DK": -50.0, "EE": -24.0, "FI": -50.0, "FR": -47.5,
+    "DE": -50.0, "EL": -22.7, "HU": -18.7, "IE": -42.0, "IT": -43.7,
+    "LV": -17.0, "LT": -21.0, "LU": -50.0, "MT": -19.0, "NL": -48.0,
+    "PL": -17.7, "PT": -28.7, "RO": -12.7, "SK": -22.7, "SI": -27.0,
+    "ES": -37.7, "SE": -50.0,
 }
 
 
@@ -265,11 +178,7 @@ def load_mc_projections(dataset, population_df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     forecast_summary.columns = [
-        "geo",
-        "year",
-        "total_CO2_mean",
-        "total_CO2_low",
-        "total_CO2_high",
+        "geo", "year", "total_CO2_mean", "total_CO2_low", "total_CO2_high",
     ]
 
     # Add EU27 aggregate
@@ -308,7 +217,7 @@ def load_oecd_projections() -> pd.DataFrame:
     oecd_df["value"] = pd.to_numeric(oecd_df["value"], errors="coerce")
     oecd_df = oecd_df.dropna(subset=["value"])
 
-    # Convert ISO3 → ISO2
+    # Convert ISO3 -> ISO2
     oecd_df["geo"] = oecd_df["geo_iso3"].map(ISO3_TO_ISO2)
 
     # Keep only mapped countries
@@ -414,27 +323,27 @@ def compute_targets(oecd_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =============================================================================
-# Visualization Functions
+# Visualization — REVISED: absolute Mt CO2 deviation
 # =============================================================================
 
 
 def create_emissions_gap_plot(comparison_df: pd.DataFrame) -> None:
-    """Create the emissions gap lollipop chart."""
+    """Create the emissions gap lollipop chart in Mt CO2."""
     setup_nature_style()
 
     # Color palette (Paul Tol colorblind-friendly)
     COLORS = {
-        "mc": "#332288",  # Dark indigo - This study
+        "mc": "#332288",        # Dark indigo - This study
         "oecd_bau": "#AA4499",  # Purple - OECD BAU
-        "oecd_et": "#CC6677",  # Dusty rose - OECD ET
-        "eea_wam": "#117733",  # Dark green - EEA WAM
-        "eea_wem": "#44AA99",  # Teal - EEA WEM
+        "oecd_et": "#CC6677",   # Dusty rose - OECD ET
+        "eea_wam": "#117733",   # Dark green - EEA WAM
+        "eea_wem": "#44AA99",   # Teal - EEA WEM
         "pypsa_base": "#DDCC77",  # Sand - PyPSA Baseline
         "pypsa_ff55": "#88CCEE",  # Light cyan - PyPSA FF55
-        "target": "#2c3e50",  # Dark gray for target line
-        "stem": "#aab7b8",  # Light gray for stems
-        "bg_pos": "#fdedec",  # Very light red bg
-        "bg_neg": "#eafaf1",  # Very light green bg
+        "target": "#2c3e50",    # Dark gray for target line
+        "stem": "#aab7b8",      # Light gray for stems
+        "bg_pos": "#fdedec",    # Very light red bg
+        "bg_neg": "#eafaf1",    # Very light green bg
     }
 
     fig, ax = plt.subplots(figsize=(6.0, 7.5))
@@ -442,107 +351,83 @@ def create_emissions_gap_plot(comparison_df: pd.DataFrame) -> None:
     n_countries = len(comparison_df)
     y_pos = np.arange(n_countries)
 
+    # Determine x-limits from data
+    all_mt_cols = [c for c in comparison_df.columns if c.endswith("_mt")]
+    all_vals = comparison_df[all_mt_cols].values.flatten()
+    all_vals = all_vals[~np.isnan(all_vals)]
+    x_min = min(all_vals.min() * 1.15, -20)
+    x_max = max(all_vals.max() * 1.15, 50)
+
     # Background panels
-    ax.axvspan(-100, 0, color=COLORS["bg_neg"], alpha=0.7, zorder=0)
-    ax.axvspan(0, 300, color=COLORS["bg_pos"], alpha=0.7, zorder=0)
+    ax.axvspan(x_min - 50, 0, color=COLORS["bg_neg"], alpha=0.7, zorder=0)
+    ax.axvspan(0, x_max + 50, color=COLORS["bg_pos"], alpha=0.7, zorder=0)
 
     # Y-offset jitter for each projection type
     jitter = {
-        "eea_wam_pct": 0.36,
-        "eea_wem_pct": 0.24,
-        "pypsa_ff55_pct": 0.12,
-        "mc_pct": 0.0,
-        "pypsa_base_pct": -0.12,
-        "oecd_et1_pct": -0.24,
-        "oecd_bau1_pct": -0.36,
+        "eea_wam_mt": 0.36,
+        "eea_wem_mt": 0.24,
+        "pypsa_ff55_mt": 0.12,
+        "mc_mt": 0.0,
+        "pypsa_base_mt": -0.12,
+        "oecd_et1_mt": -0.24,
+        "oecd_bau1_mt": -0.36,
     }
 
     # Draw stems (lollipop style)
     for i, row in comparison_df.iterrows():
-        if pd.isna(row["mc_pct"]):
+        if pd.isna(row["mc_mt"]):
             continue
         ax.hlines(
-            y=i,
-            xmin=0,
-            xmax=row["mc_pct"],
-            color=COLORS["stem"],
-            linewidth=1.0,
-            zorder=2,
+            y=i, xmin=0, xmax=row["mc_mt"],
+            color=COLORS["stem"], linewidth=1.0, zorder=2,
         )
 
     # Plot MC results (main)
-    mc_mask = ~comparison_df["mc_pct"].isna()
+    mc_mask = ~comparison_df["mc_mt"].isna()
     eu_mask = comparison_df["geo"] == "EU27"
 
     # Regular countries
     regular_mask = mc_mask & ~eu_mask
     ax.scatter(
-        comparison_df.loc[regular_mask, "mc_pct"],
-        y_pos[regular_mask] + jitter["mc_pct"],
-        s=80,
-        c=COLORS["mc"],
-        marker="o",
-        edgecolors="white",
-        linewidths=0.6,
-        zorder=6,
-        label="This study",
+        comparison_df.loc[regular_mask, "mc_mt"],
+        y_pos[regular_mask] + jitter["mc_mt"],
+        s=80, c=COLORS["mc"], marker="o",
+        edgecolors="white", linewidths=0.6, zorder=6, label="This study",
     )
 
     # EU27 (larger)
     eu27_mask = mc_mask & eu_mask
     ax.scatter(
-        comparison_df.loc[eu27_mask, "mc_pct"],
-        y_pos[eu27_mask] + jitter["mc_pct"],
-        s=160,
-        c=COLORS["mc"],
-        marker="o",
-        edgecolors="white",
-        linewidths=1.0,
-        zorder=7,
+        comparison_df.loc[eu27_mask, "mc_mt"],
+        y_pos[eu27_mask] + jitter["mc_mt"],
+        s=160, c=COLORS["mc"], marker="o",
+        edgecolors="white", linewidths=1.0, zorder=7,
     )
 
     # Other projection sources
     marker_styles = {
-        "oecd_bau1_pct": {
-            "color": COLORS["oecd_bau"],
-            "marker": "D",
-            "s": 20,
-            "s_eu": 40,
+        "oecd_bau1_mt": {
+            "color": COLORS["oecd_bau"], "marker": "D", "s": 20, "s_eu": 40,
             "label": "OECD Business as Usual",
         },
-        "oecd_et1_pct": {
-            "color": COLORS["oecd_et"],
-            "marker": "D",
-            "s": 20,
-            "s_eu": 40,
+        "oecd_et1_mt": {
+            "color": COLORS["oecd_et"], "marker": "D", "s": 20, "s_eu": 40,
             "label": "OECD Energy Transition",
         },
-        "eea_wam_pct": {
-            "color": COLORS["eea_wam"],
-            "marker": "^",
-            "s": 24,
-            "s_eu": 48,
+        "eea_wam_mt": {
+            "color": COLORS["eea_wam"], "marker": "^", "s": 24, "s_eu": 48,
             "label": "EEA With Additional Measures",
         },
-        "eea_wem_pct": {
-            "color": COLORS["eea_wem"],
-            "marker": "^",
-            "s": 24,
-            "s_eu": 48,
+        "eea_wem_mt": {
+            "color": COLORS["eea_wem"], "marker": "^", "s": 24, "s_eu": 48,
             "label": "EEA With Existing Measures",
         },
-        "pypsa_base_pct": {
-            "color": COLORS["pypsa_base"],
-            "marker": "s",
-            "s": 20,
-            "s_eu": 40,
+        "pypsa_base_mt": {
+            "color": COLORS["pypsa_base"], "marker": "s", "s": 20, "s_eu": 40,
             "label": "PyPSA Baseline",
         },
-        "pypsa_ff55_pct": {
-            "color": COLORS["pypsa_ff55"],
-            "marker": "s",
-            "s": 20,
-            "s_eu": 40,
+        "pypsa_ff55_mt": {
+            "color": COLORS["pypsa_ff55"], "marker": "s", "s": 20, "s_eu": 40,
             "label": "PyPSA Fit for 55",
         },
     }
@@ -557,26 +442,15 @@ def create_emissions_gap_plot(comparison_df: pd.DataFrame) -> None:
             ax.scatter(
                 comparison_df.loc[mask, col],
                 y_pos[mask] + jitter[col],
-                c=style["color"],
-                marker=style["marker"],
-                s=sizes,
-                alpha=0.9,
-                edgecolors="white",
-                linewidths=0.3,
-                zorder=5,
-                label=style["label"],
+                c=style["color"], marker=style["marker"], s=sizes, alpha=0.9,
+                edgecolors="white", linewidths=0.3, zorder=5, label=style["label"],
             )
 
     # Target line at 0
     ax.axvline(0, color=COLORS["target"], linewidth=1.8, zorder=3)
     ax.text(
-        0,
-        n_countries + 0.6,
-        "2030 TARGET",
-        ha="center",
-        va="bottom",
-        fontsize=6.5,
-        fontweight="bold",
+        0, n_countries + 0.6, "2030 TARGET",
+        ha="center", va="bottom", fontsize=6.5, fontweight="bold",
         color=COLORS["target"],
     )
 
@@ -591,28 +465,18 @@ def create_emissions_gap_plot(comparison_df: pd.DataFrame) -> None:
             label.set_fontweight("bold")
             label.set_fontsize(8)
 
-    # X-axis
-    ax.set_xlim(-80, 280)
-    ax.set_xlabel("Deviation from 2030 target (Fit for 55, ESR burden sharing) (%)")
+    # X-axis — REVISED: absolute Mt CO2
+    ax.set_xlim(x_min, x_max)
+    ax.set_xlabel("Deviation from 2030 target (Fit for 55, ESR burden sharing) (Mt CO\u2082)")
 
     # Directional labels
     ax.text(
-        -40,
-        -1.3,
-        "← Meeting target",
-        fontsize=6.5,
-        ha="center",
-        color="#1e8449",
-        fontstyle="italic",
+        x_min * 0.5, -1.3, "\u2190 Meeting target",
+        fontsize=6.5, ha="center", color="#1e8449", fontstyle="italic",
     )
     ax.text(
-        140,
-        -1.3,
-        "Exceeding emissions →",
-        fontsize=6.5,
-        ha="center",
-        color="#922b21",
-        fontstyle="italic",
+        x_max * 0.5, -1.3, "Exceeding emissions \u2192",
+        fontsize=6.5, ha="center", color="#922b21", fontstyle="italic",
     )
 
     # Grid
@@ -622,95 +486,33 @@ def create_emissions_gap_plot(comparison_df: pd.DataFrame) -> None:
 
     # Legend
     legend_elements = [
-        Line2D(
-            [0],
-            [0],
-            marker="o",
-            color="w",
-            markerfacecolor=COLORS["mc"],
-            markersize=7.5,
-            markeredgecolor="white",
-            markeredgewidth=0.4,
-            label="This study",
-        ),
-        Line2D(
-            [0],
-            [0],
-            marker="s",
-            color="w",
-            markerfacecolor=COLORS["pypsa_base"],
-            markersize=4.5,
-            markeredgecolor="white",
-            markeredgewidth=0.2,
-            label="PyPSA Baseline",
-        ),
-        Line2D(
-            [0],
-            [0],
-            marker="s",
-            color="w",
-            markerfacecolor=COLORS["pypsa_ff55"],
-            markersize=4.5,
-            markeredgecolor="white",
-            markeredgewidth=0.2,
-            label="PyPSA Fit for 55",
-        ),
-        Line2D(
-            [0],
-            [0],
-            marker="D",
-            color="w",
-            markerfacecolor=COLORS["oecd_bau"],
-            markersize=4.5,
-            markeredgecolor="white",
-            markeredgewidth=0.2,
-            label="OECD Business as Usual",
-        ),
-        Line2D(
-            [0],
-            [0],
-            marker="D",
-            color="w",
-            markerfacecolor=COLORS["oecd_et"],
-            markersize=4.5,
-            markeredgecolor="white",
-            markeredgewidth=0.2,
-            label="OECD Energy Transition",
-        ),
-        Line2D(
-            [0],
-            [0],
-            marker="^",
-            color="w",
-            markerfacecolor=COLORS["eea_wam"],
-            markersize=5,
-            markeredgecolor="white",
-            markeredgewidth=0.2,
-            label="EEA With Additional Measures",
-        ),
-        Line2D(
-            [0],
-            [0],
-            marker="^",
-            color="w",
-            markerfacecolor=COLORS["eea_wem"],
-            markersize=5,
-            markeredgecolor="white",
-            markeredgewidth=0.2,
-            label="EEA With Existing Measures",
-        ),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=COLORS["mc"],
+               markersize=7.5, markeredgecolor="white", markeredgewidth=0.4,
+               label="This study"),
+        Line2D([0], [0], marker="s", color="w", markerfacecolor=COLORS["pypsa_base"],
+               markersize=4.5, markeredgecolor="white", markeredgewidth=0.2,
+               label="PyPSA Baseline"),
+        Line2D([0], [0], marker="s", color="w", markerfacecolor=COLORS["pypsa_ff55"],
+               markersize=4.5, markeredgecolor="white", markeredgewidth=0.2,
+               label="PyPSA Fit for 55"),
+        Line2D([0], [0], marker="D", color="w", markerfacecolor=COLORS["oecd_bau"],
+               markersize=4.5, markeredgecolor="white", markeredgewidth=0.2,
+               label="OECD Business as Usual"),
+        Line2D([0], [0], marker="D", color="w", markerfacecolor=COLORS["oecd_et"],
+               markersize=4.5, markeredgecolor="white", markeredgewidth=0.2,
+               label="OECD Energy Transition"),
+        Line2D([0], [0], marker="^", color="w", markerfacecolor=COLORS["eea_wam"],
+               markersize=5, markeredgecolor="white", markeredgewidth=0.2,
+               label="EEA With Additional Measures"),
+        Line2D([0], [0], marker="^", color="w", markerfacecolor=COLORS["eea_wem"],
+               markersize=5, markeredgecolor="white", markeredgewidth=0.2,
+               label="EEA With Existing Measures"),
     ]
 
     leg = ax.legend(
-        handles=legend_elements,
-        loc="lower right",
-        frameon=True,
-        fontsize=5.5,
-        framealpha=0.95,
-        edgecolor="#bdc3c7",
-        handletextpad=0.5,
-        labelspacing=0.4,
-        borderpad=0.5,
+        handles=legend_elements, loc="lower right", frameon=True, fontsize=5.5,
+        framealpha=0.95, edgecolor="#bdc3c7", handletextpad=0.5,
+        labelspacing=0.4, borderpad=0.5,
     )
     leg.get_frame().set_linewidth(0.4)
 
@@ -727,9 +529,7 @@ def create_emissions_gap_plot(comparison_df: pd.DataFrame) -> None:
     for fmt in ["png", "pdf", "svg"]:
         plt.savefig(
             OUTPUT_DIR / f"fig1_emissions_gap.{fmt}",
-            dpi=300,
-            bbox_inches="tight",
-            facecolor="white",
+            dpi=300, bbox_inches="tight", facecolor="white",
         )
     plt.close()
 
@@ -742,9 +542,9 @@ def create_emissions_gap_plot(comparison_df: pd.DataFrame) -> None:
 
 
 def main():
-    """Generate Figure 1: Emissions Gap Scatter Plot."""
+    """Generate Figure 1: Emissions Gap Scatter Plot (in Mt CO2)."""
     print("=" * 70)
-    print("GENERATING FIGURE 1: EMISSIONS GAP SCATTER PLOT")
+    print("GENERATING FIGURE 1: EMISSIONS GAP (Mt CO2)")
     print("=" * 70)
 
     # Load data
@@ -769,7 +569,7 @@ def main():
     if not oecd_2030.empty:
         oecd_2030["value_tonnes"] = oecd_2030["value"] * 1e6
 
-    # Compute targets
+    # Compute targets (needs full OECD data for 2005 and 1990 baselines)
     print("Computing targets...")
     esr_targets = compute_targets(oecd_full) if not oecd_full.empty else pd.DataFrame()
 
@@ -785,39 +585,39 @@ def main():
         target_value = target_row.iloc[0]["corrected_target_2030_tonnes"]
         data = {"geo": geo, "target": target_value}
 
+        # Helper: convert projected tonnes to Mt deviation from target
+        def deviation_mt(projected_tonnes, _tv=target_value):
+            return (projected_tonnes - _tv) / 1e6
+
         # This study (MC projections)
         mc_2030 = forecast_summary[
             (forecast_summary["geo"] == geo) & (forecast_summary["year"] == 2030)
         ]
         if not mc_2030.empty:
-            data["mc_pct"] = (
-                (mc_2030.iloc[0]["total_CO2_mean"] - target_value) / target_value
-            ) * 100
+            data["mc_mt"] = deviation_mt(mc_2030.iloc[0]["total_CO2_mean"])
         else:
-            data["mc_pct"] = np.nan
+            data["mc_mt"] = np.nan
 
         # OECD scenarios
         if not oecd_2030.empty:
-            for scenario, col in [("BAU1", "oecd_bau1_pct"), ("ET1", "oecd_et1_pct")]:
+            for scenario, col in [("BAU1", "oecd_bau1_mt"), ("ET1", "oecd_et1_mt")]:
                 oecd_row = oecd_2030[
                     (oecd_2030["geo"] == geo) & (oecd_2030["scenario"] == scenario)
                 ]
                 data[col] = (
-                    ((oecd_row.iloc[0]["value_tonnes"] - target_value) / target_value)
-                    * 100
+                    deviation_mt(oecd_row.iloc[0]["value_tonnes"])
                     if not oecd_row.empty
                     else np.nan
                 )
 
         # EEA scenarios
         if not eea_2030.empty:
-            for scenario, col in [("WAM", "eea_wam_pct"), ("WEM", "eea_wem_pct")]:
+            for scenario, col in [("WAM", "eea_wam_mt"), ("WEM", "eea_wem_mt")]:
                 eea_row = eea_2030[
                     (eea_2030["geo"] == geo) & (eea_2030["scenario"] == scenario)
                 ]
                 data[col] = (
-                    ((eea_row.iloc[0]["value_tonnes"] - target_value) / target_value)
-                    * 100
+                    deviation_mt(eea_row.iloc[0]["value_tonnes"])
                     if not eea_row.empty
                     else np.nan
                 )
@@ -827,8 +627,8 @@ def main():
             pypsa_base = pypsa_2030[
                 (pypsa_2030["geo"] == geo) & (pypsa_2030["scenario"] == "base")
             ]
-            data["pypsa_base_pct"] = (
-                ((pypsa_base.iloc[0]["total_CO2"] - target_value) / target_value) * 100
+            data["pypsa_base_mt"] = (
+                deviation_mt(pypsa_base.iloc[0]["total_CO2"])
                 if not pypsa_base.empty
                 else np.nan
             )
@@ -837,8 +637,8 @@ def main():
                 (pypsa_2030["geo"] == geo)
                 & (pypsa_2030["scenario"].isin(["policy", "FF55", "ff55"]))
             ]
-            data["pypsa_ff55_pct"] = (
-                ((pypsa_ff55.iloc[0]["total_CO2"] - target_value) / target_value) * 100
+            data["pypsa_ff55_mt"] = (
+                deviation_mt(pypsa_ff55.iloc[0]["total_CO2"])
                 if not pypsa_ff55.empty
                 else np.nan
             )
@@ -847,9 +647,9 @@ def main():
 
     comparison_df = pd.DataFrame(comparison_data)
 
-    # Sort by MC percentage
-    has_mc = ~comparison_df["mc_pct"].isna()
-    df_with_mc = comparison_df[has_mc].sort_values("mc_pct").reset_index(drop=True)
+    # Sort by MC Mt deviation (ascending — smallest/most negative at top)
+    has_mc = ~comparison_df["mc_mt"].isna()
+    df_with_mc = comparison_df[has_mc].sort_values("mc_mt").reset_index(drop=True)
     df_without_mc = comparison_df[~has_mc].reset_index(drop=True)
     comparison_df = pd.concat([df_with_mc, df_without_mc], ignore_index=True)
 
@@ -868,13 +668,13 @@ def main():
     print("SUMMARY STATISTICS")
     print("=" * 70)
 
-    mc_valid = comparison_df[comparison_df["geo"] != "EU27"]["mc_pct"].dropna()
+    mc_valid = comparison_df[comparison_df["geo"] != "EU27"]["mc_mt"].dropna()
     on_track = (mc_valid < 0).sum()
     print(f"\nCountries on track (this study): {on_track}/{len(mc_valid)}")
 
     eu27_row = comparison_df[comparison_df["geo"] == "EU27"]
     if not eu27_row.empty:
-        print(f"EU27 aggregate deviation: {eu27_row.iloc[0]['mc_pct']:+.1f}%")
+        print(f"EU27 aggregate deviation: {eu27_row.iloc[0]['mc_mt']:+.1f} Mt CO2")
 
     print("\nFigure 1 generation complete!")
 
