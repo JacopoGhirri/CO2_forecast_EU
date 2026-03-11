@@ -341,18 +341,20 @@ def project_country(
         # Sample latent with historical variance
         latent_current = reparameterize(mean_current, torch.exp(0.5 * avg_log_var))
 
-        # ---- 2024 anchor: replace emissions_prev with observed 2024 value ---
-        if year == 2024 and country in emissions_2024:
-            emissions_prev = emissions_2024[country].unsqueeze(0).to(DEVICE)
-        # (For all other years, emissions_prev is carried forward from the
-        #  previous iteration — same autoregressive logic as original.)
-
         # Predict emissions
         predictor_input = torch.cat(
             (latent_current, context_current, latent_prev, context_prev), dim=1
         )
         emission_delta, uncertainty = predictor(predictor_input)
         emissions_current = emission_delta + emissions_prev
+
+        # ---- 2024 anchor: OVERRIDE output with observed 2024 value ----------
+        # We replace emissions_current (not emissions_prev) so that the
+        # predictor still runs normally but its output is discarded in favour
+        # of the real datum.  emissions_prev is updated to emissions_current
+        # at the end of the loop, so the 2025+ chain is anchored correctly.
+        if year == 2024 and country in emissions_2024:
+            emissions_current = emissions_2024[country].unsqueeze(0).to(DEVICE)
 
         row = (
             [mc_sample, country, year]
