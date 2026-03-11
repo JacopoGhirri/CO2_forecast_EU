@@ -1,44 +1,25 @@
 """
-Monte Carlo emission projections to 2030.
+Monte Carlo emission projections to 2030 — with 2024 emission anchor.
 
-This script generates Monte Carlo samples of emission projections for EU27
-countries from 2024 to 2030. It uses the trained VAE, emission predictor,
-and latent forecaster to autoregressively project emissions while capturing
-uncertainty through stochastic sampling.
+Same as generate_projections.py but uses observed 2024 sectoral emissions
+as the baseline `emissions_prev` for the 2024 forecast step, instead of
+propagating from 2023.
 
-The projections use:
-1. VAE encoder to get initial latent states from 2022-2023 historical data
-2. Latent forecaster to project future latent states
-3. Emission predictor to convert latents to emission predictions
-
-Uncertainty is captured through reparameterization sampling in the latent
-space before linking latent variables to emissions. Learned uncertainty
-estimates from the predictor are also computed and stored.
-
-Execution model:
-    Models and data are loaded once onto a single GPU. MC samples are
-    processed sequentially, with each sample seeded deterministically
-    (SEED + mc_sample) so that sample i always produces identical results
-    regardless of chunk size, resume point, or execution environment.
-    This avoids CUDA context issues that arise when spawning multiple
-    processes that each try to initialise their own GPU context (common
-    on HPC clusters with SLURM/PBS resource isolation).
-
-Usage:
-    python -m scripts.inference.generate_projections
-
-Outputs:
-    - data/projections/mc_projections.csv: Monte Carlo samples with columns:
-        [mc_sample, geo, year, latent_0..N, emissions_by_sector, uncertainty_by_sector]
-
-Reference:
-    Section 2 "Results" in the paper describes the projection methodology.
+Key changes vs original:
+  - load_2024_emissions() reads air_emissions_yearly_full.csv, aggregates
+    sectors with the same grouping_structure used in DatasetUnified, and
+    applies the *training-set* scaling parameters already stored in the
+    dataset object.  No new scaling is computed.
+  - project_country() checks whether year==2024 and, if so, replaces
+    emissions_prev with the observed 2024 value before the predictor call.
+    The autoregressive chain then continues normally from 2025 onward.
 """
 
 import csv
 import random
 from pathlib import Path
 
+import pandas as pd
 import torch
 
 from config.data.output_configs import output_configs
@@ -56,17 +37,13 @@ from scripts.elements.models import (
 from scripts.utils import load_config, load_dataset
 
 # =============================================================================
-# Configuration
+# Configuration  (identical to generate_projections.py)
 # =============================================================================
 
-# Reproducibility — each MC sample is seeded as (SEED + mc_sample)
 SEED = 0
-
-# Monte Carlo settings
 N_MC_SAMPLES = 10000
-CHUNK_SIZE = 100  # Write results to CSV every CHUNK_SIZE samples
+CHUNK_SIZE = 100
 
-# Paths
 OUTPUT_PATH = Path("data/projections/mc_projections.csv")
 DATASET_PATH = Path("data/pytorch_datasets/unified_dataset.pkl")
 
@@ -78,7 +55,6 @@ VAE_MODEL_PATH = Path("data/pytorch_models/vae_model.pth")
 PREDICTOR_MODEL_PATH = Path("data/pytorch_models/predictor_model.pth")
 FORECASTER_MODEL_PATH = Path("data/pytorch_models/forecaster_model.pth")
 
-# EU27 country codes
 EU27_COUNTRIES = [
     "AT",
     "BE",
@@ -109,75 +85,148 @@ EU27_COUNTRIES = [
     "SE",
 ]
 
-# Emission sectors (must match output_configs)
 EMISSION_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Power"]
+PROJECTION_YEARS = range(2024, 2031)
 
-# Projection years
-PROJECTION_YEARS = range(2024, 2031)  # 2024 to 2030 inclusive
-
-# Device configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 # =============================================================================
-# Model Loading
+# 2024 emission anchor
+# =============================================================================
+
+
+def load_2024_emissions(
+    dataset: DatasetUnified,
+    path_csvs: str = "data/full_timeseries/",
+) -> dict[str, torch.Tensor]:
+    """
+    Load and scale observed 2024 sectoral emissions for all EU27 countries.
+
+    Uses exactly the same aggregation logic as DatasetUnified._load_emissions()
+    (level mode, sector grouping from output_configs) and applies the
+    *pre-computed* scaling parameters already stored in `dataset` — so the
+    returned tensors live in the same scaled space as dataset.emi_df.
+
+    Args:
+        dataset: The trained DatasetUnified instance (provides scaling params).
+        path_csvs: Directory containing air_emissions_yearly_full.csv.
+
+    Returns:
+        Dict mapping country ISO2 code -> 1-D float32 tensor of shape
+        (n_sectors,) in scaled emission space, on CPU.
+        Countries with missing 2024 data are omitted (caller must handle).
+    """
+    cfg = output_configs
+    assert cfg["mode"] == "level", (
+        f"Only 'level' mode is supported for 2024 anchor; got mode='{cfg['mode']}'"
+    )
+    assert cfg["output"] == "Sectors", (
+        "Only 'Sectors' output is supported for 2024 anchor; "
+        f"got output='{cfg['output']}'"
+    )
+
+    emi_df = pd.read_csv(f"{path_csvs}air_emissions_yearly_full.csv")
+    emi_df_2024 = emi_df[emi_df["year"] == 2024].copy()
+
+    if emi_df_2024.empty:
+        raise ValueError(
+            "No rows with year==2024 found in air_emissions_yearly_full.csv. "
+            "Make sure the file contains 2024 data."
+        )
+
+    sectors = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Power"]
+    measure = cfg["measure"]  # e.g. "KG_HAB"
+    emission_type = cfg["emission_type"]  # e.g. "CO2"
+    grouping = cfg["grouping_structure"]
+
+    # ---- aggregate raw (unscaled) sector values per country -----------------
+    records = {}
+    for geo, grp in emi_df_2024.groupby("geo"):
+        if geo not in EU27_COUNTRIES:
+            continue
+        row_vals = {}
+        for sector in sectors:
+            activities = grouping[sector]
+            total = 0.0
+            for activity in activities:
+                pattern = f"air_emissions_yearly:{emission_type}:{activity}:{measure}"
+                cols = [c for c in grp.columns if c == pattern]
+                if cols:
+                    total += grp[cols].values.sum()
+            row_vals[sector] = total
+        records[geo] = row_vals
+
+    if not records:
+        raise ValueError(
+            "After filtering, no EU27 countries have 2024 emission data. "
+            "Check the 'geo' codes in the CSV."
+        )
+
+    # ---- apply training-set scaling parameters --------------------------------
+    # The emission columns are stored in dataset.emission_columns in the same
+    # sector order used above.  The scaling params key is just the sector name.
+    scaled = {}
+    for geo, row_vals in records.items():
+        tensor_vals = []
+        for sector in dataset.emission_columns:
+            # emission_columns may be plain sector names ("HeatingCooling") or
+            # include the measure suffix ("HeatingCooling_KG_HAB") depending on
+            # whether measure=="both".  Handle both cases.
+            raw_sector = sector.split("_")[0] if "_" in sector else sector
+            if raw_sector not in row_vals:
+                raise KeyError(
+                    f"Sector '{raw_sector}' not found in aggregated 2024 data "
+                    f"for country '{geo}'. emission_columns={dataset.emission_columns}"
+                )
+            raw_val = row_vals[raw_sector]
+
+            params = dataset.precomputed_scaling_params.get(sector)
+            if params is None:
+                raise KeyError(
+                    f"No scaling params found for emission column '{sector}'. "
+                    "Make sure you are passing the same dataset used for training."
+                )
+
+            if dataset.scaling_type == "normalization":
+                scaled_val = (raw_val - params["mean"]) / params["std"]
+            elif dataset.scaling_type == "maxmin":
+                scaled_val = (raw_val - params["min"]) / (params["max"] - params["min"])
+            else:
+                raise ValueError(f"Unknown scaling_type: {dataset.scaling_type}")
+
+            tensor_vals.append(scaled_val)
+
+        scaled[geo] = torch.tensor(tensor_vals, dtype=torch.float32)
+
+    missing = set(EU27_COUNTRIES) - set(scaled.keys())
+    if missing:
+        print(
+            f"[WARNING] load_2024_emissions: no 2024 data for {sorted(missing)}. "
+            "These countries will fall back to the 2023 anchor."
+        )
+
+    return scaled
+
+
+# =============================================================================
+# Model loading  (identical to original)
 # =============================================================================
 
 
 def set_eval_mode(model: torch.nn.Module) -> None:
-    """
-    Sets model to evaluation mode.
-
-    Note: In previous code iterations, there was an option to keep dropout active
-    during inference for MC dropout uncertainty. This is currently disabled
-    but can be re-enabled by uncommenting the dropout activation loop.
-
-    Args:
-        model: PyTorch model to set to eval mode.
-    """
     model.eval()
-    # Uncomment below to enable MC dropout (keeps dropout active during inference)
-    # for module in model.modules():
-    #     if isinstance(module, torch.nn.Dropout):
-    #         module.train()
 
 
-def load_models(
-    dataset: DatasetUnified,
-    vae_config_path: Path,
-    predictor_config_path: Path,
-    forecaster_config_path: Path,
-    vae_model_path: Path,
-    predictor_model_path: Path,
-    forecaster_model_path: Path,
-) -> tuple[VAEModel, EmissionPredictor, LatentForecaster, int]:
-    """
-    Loads all trained models for projection onto a single device.
-
-    All models are loaded to CPU first and then moved to DEVICE once,
-    avoiding CUDA context issues in multi-process environments.
-
-    Args:
-        dataset: Dataset instance (needed for input/context dimensions).
-        vae_config_path: Path to VAE config YAML.
-        predictor_config_path: Path to predictor config YAML.
-        forecaster_config_path: Path to forecaster config YAML.
-        vae_model_path: Path to trained VAE weights.
-        predictor_model_path: Path to trained predictor weights.
-        forecaster_model_path: Path to trained forecaster weights.
-
-    Returns:
-        Tuple of (vae_model, predictor, forecaster, latent_dim).
-    """
-    vae_config = load_config(vae_config_path)
-    predictor_config = load_config(predictor_config_path)
-    forecaster_config = load_config(forecaster_config_path)
+def load_models(dataset, vae_cfg, pred_cfg, fcast_cfg, vae_path, pred_path, fcast_path):
+    vae_config = load_config(vae_cfg)
+    pred_config = load_config(pred_cfg)
+    fcast_config = load_config(fcast_cfg)
 
     input_dim = len(dataset.input_variable_names)
     context_dim = len(dataset.context_variable_names)
     latent_dim = vae_config.vae_latent_dim
 
-    # Build VAE
     encoder = Encoder(
         input_dim=input_dim,
         latent_dim=latent_dim,
@@ -198,56 +247,44 @@ def load_models(
         dropout=vae_config.vae_dropouts,
     )
     vae_model = VAEModel(encoder, decoder).to(DEVICE)
-    vae_model.load_state_dict(torch.load(vae_model_path, map_location="cpu"))
+    vae_model.load_state_dict(torch.load(vae_path, map_location="cpu"))
     set_eval_mode(vae_model)
 
-    # Build predictor
     predictor_input_dim = 2 * (latent_dim + context_dim)
     predictor = EmissionPredictor(
         input_dim=predictor_input_dim,
         output_configs=output_configs,
-        num_blocks=predictor_config.pred_num_blocks,
-        dim_block=predictor_config.pred_dim_block,
-        width_block=predictor_config.pred_width_block,
-        activation=predictor_config.pred_activation,
-        normalization=predictor_config.pred_normalization,
-        dropout=predictor_config.pred_dropouts,
+        num_blocks=pred_config.pred_num_blocks,
+        dim_block=pred_config.pred_dim_block,
+        width_block=pred_config.pred_width_block,
+        activation=pred_config.pred_activation,
+        normalization=pred_config.pred_normalization,
+        dropout=pred_config.pred_dropouts,
         uncertainty=True,
     ).to(DEVICE)
-
-    # Load full prediction model (contains both VAE and predictor weights)
     full_pred_model = FullPredictionModel(vae=vae_model, predictor=predictor)
-    full_pred_model.load_state_dict(
-        torch.load(predictor_model_path, map_location="cpu")
-    )
+    full_pred_model.load_state_dict(torch.load(pred_path, map_location="cpu"))
     set_eval_mode(full_pred_model)
 
-    # Build forecaster
     forecaster = LatentForecaster(
         input_dim=predictor_input_dim,
         latent_dim=latent_dim,
-        num_blocks=forecaster_config.forecast_num_blocks,
-        dim_block=forecaster_config.forecast_dim_block,
-        width_block=forecaster_config.forecast_width_block,
-        activation=forecaster_config.forecast_activation,
-        normalization=forecaster_config.forecast_normalization,
-        dropout=forecaster_config.forecast_dropouts,
+        num_blocks=fcast_config.forecast_num_blocks,
+        dim_block=fcast_config.forecast_dim_block,
+        width_block=fcast_config.forecast_width_block,
+        activation=fcast_config.forecast_activation,
+        normalization=fcast_config.forecast_normalization,
+        dropout=fcast_config.forecast_dropouts,
     ).to(DEVICE)
-
-    # Load full forecasting model
-    full_forecast_model = FullLatentForecastingModel(
-        vae=vae_model, forecaster=forecaster
-    )
-    full_forecast_model.load_state_dict(
-        torch.load(forecaster_model_path, map_location="cpu")
-    )
-    set_eval_mode(full_forecast_model)
+    full_fcast_model = FullLatentForecastingModel(vae=vae_model, forecaster=forecaster)
+    full_fcast_model.load_state_dict(torch.load(fcast_path, map_location="cpu"))
+    set_eval_mode(full_fcast_model)
 
     return vae_model, predictor, forecaster, latent_dim
 
 
 # =============================================================================
-# Projection Logic
+# Projection logic
 # =============================================================================
 
 
@@ -260,86 +297,63 @@ def project_country(
     predictor: EmissionPredictor,
     forecaster: LatentForecaster,
     latent_dim: int,
+    emissions_2024: dict[str, torch.Tensor],  # NEW: observed 2024 anchor
 ) -> list[list]:
     """
-    Projects emissions for a single country across all projection years.
+    Project emissions for one country across 2024-2030.
 
-    Implements autoregressive projection:
-    1. Initialize latent states from 2022-2023 historical data
-    2. For each year 2024-2030:
-       a. Forecast new latent state using forecaster
-       b. Predict emissions using predictor
-       c. Update latent history for next iteration
-
-    Args:
-        country: ISO country code (e.g., 'DE').
-        mc_sample: Monte Carlo sample index.
-        dataset: Historical dataset with 2022-2023 data.
-        projection_dataset: Dataset with projected context variables.
-        vae_model: Trained VAE model.
-        predictor: Trained emission predictor.
-        forecaster: Trained latent forecaster.
-        latent_dim: Dimensionality of latent space.
-
-    Returns:
-        List of result rows, one per year. Each row contains:
-        [mc_sample, country, year, latent_values..., emissions..., uncertainties...]
+    For year==2024: `emissions_prev` is replaced by the observed 2024
+    value (if available), anchoring the entire autoregressive chain on
+    the latest real datum.  All other logic is identical to the original.
     """
     results = []
 
-    # -------------------------------------------------------------------------
-    # Initialize from historical data (2022-2023)
-    # -------------------------------------------------------------------------
-
-    # Get 2023 latent state (t-1 for first projection year)
+    # ---- initialise latent states from 2022-2023 historical data ------------
     idx_2023 = dataset.index_map.get((country, 2023))
     input_2023 = dataset.input_df[idx_2023].unsqueeze(0).to(DEVICE)
     mean_2023, log_var_2023 = vae_model.encoder(input_2023)
     latent_prev = reparameterize(mean_2023, torch.exp(0.5 * log_var_2023))
 
-    # Get 2022 latent state (t-2 for first projection year)
     idx_2022 = dataset.index_map.get((country, 2022))
     input_2022 = dataset.input_df[idx_2022].unsqueeze(0).to(DEVICE)
     mean_2022, log_var_2022 = vae_model.encoder(input_2022)
-    reparameterize(mean_2022, torch.exp(0.5 * log_var_2022))
+    # (sample discarded — only needed for avg_log_var)
 
-    # Average historical latent variance for sampling
     avg_log_var = (log_var_2023 + log_var_2022) / 2
 
-    # Initialize emission history from 2023
+    # Default emission baseline: 2023 (same as original script)
     emissions_prev = dataset.emi_df[idx_2023, :].unsqueeze(0).to(DEVICE)
 
-    # Track means for forecaster (which uses means, not samples)
     mean_prev = mean_2023
     mean_past = mean_2022
 
-    # -------------------------------------------------------------------------
-    # Autoregressive projection loop
-    # -------------------------------------------------------------------------
-
+    # ---- autoregressive projection loop -------------------------------------
     for year in PROJECTION_YEARS:
-        # Get projected context for current and previous year
         context_prev, context_current = projection_dataset.get_from_keys_shifted(
             country, year
         )
         context_prev = context_prev.unsqueeze(0).to(DEVICE)
         context_current = context_current.unsqueeze(0).to(DEVICE)
 
-        # Forecast latent mean for current year
+        # Forecast latent mean for this year
         mean_current = forecaster(mean_prev, mean_past, context_current, context_prev)
 
-        # Sample latent state using historical variance
+        # Sample latent with historical variance
         latent_current = reparameterize(mean_current, torch.exp(0.5 * avg_log_var))
 
+        # ---- 2024 anchor: replace emissions_prev with observed 2024 value ---
+        if year == 2024 and country in emissions_2024:
+            emissions_prev = emissions_2024[country].unsqueeze(0).to(DEVICE)
+        # (For all other years, emissions_prev is carried forward from the
+        #  previous iteration — same autoregressive logic as original.)
+
         # Predict emissions
-        # Input: [z_t, c_t, z_{t-1}, c_{t-1}]
         predictor_input = torch.cat(
             (latent_current, context_current, latent_prev, context_prev), dim=1
         )
         emission_delta, uncertainty = predictor(predictor_input)
         emissions_current = emission_delta + emissions_prev
 
-        # Store result row
         row = (
             [mc_sample, country, year]
             + latent_current.squeeze(0).cpu().tolist()
@@ -348,7 +362,7 @@ def project_country(
         )
         results.append(row)
 
-        # Update history for next iteration
+        # Update history
         latent_prev = latent_current
         mean_past = mean_prev
         mean_prev = mean_current
@@ -358,76 +372,58 @@ def project_country(
 
 
 # =============================================================================
-# Main Entry Point
+# Main
 # =============================================================================
 
 
 def main():
-    """
-    Main function to run Monte Carlo projections.
-
-    Workflow:
-    1. Load dataset and all models once onto a single GPU
-    2. Create CSV with header
-    3. Process MC samples sequentially, seeding each deterministically
-    4. Write results in chunks to manage memory and allow crash recovery
-
-    Each MC sample is seeded with (SEED + mc_sample) before its forward
-    passes, ensuring that sample i always produces identical results
-    regardless of chunk boundaries, resume point, or total sample count.
-    """
-    # Ensure output directory exists
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Device: {DEVICE}")
     print(f"Loading dataset from {DATASET_PATH}...")
 
-    # Load dataset once — keep tensors on CPU, move per-sample to GPU
     dataset = load_dataset(DATASET_PATH)
     dataset.input_df = dataset.input_df.cpu()
     dataset.context_df = dataset.context_df.cpu()
     dataset.emi_df = dataset.emi_df.cpu()
 
+    print("Loading observed 2024 emissions for anchor...")
+    emissions_2024 = load_2024_emissions(dataset)
+    print(f"  Loaded 2024 anchor for {len(emissions_2024)} countries.")
+
     print("Loading models...")
     vae_model, predictor, forecaster, latent_dim = load_models(
         dataset=dataset,
-        vae_config_path=VAE_CONFIG_PATH,
-        predictor_config_path=PREDICTOR_CONFIG_PATH,
-        forecaster_config_path=FORECASTER_CONFIG_PATH,
-        vae_model_path=VAE_MODEL_PATH,
-        predictor_model_path=PREDICTOR_MODEL_PATH,
-        forecaster_model_path=FORECASTER_MODEL_PATH,
+        vae_cfg=VAE_CONFIG_PATH,
+        pred_cfg=PREDICTOR_CONFIG_PATH,
+        fcast_cfg=FORECASTER_CONFIG_PATH,
+        vae_path=VAE_MODEL_PATH,
+        pred_path=PREDICTOR_MODEL_PATH,
+        fcast_path=FORECASTER_MODEL_PATH,
     )
 
     projection_dataset = DatasetProjections2030(dataset)
 
-    # Create CSV header
     header = (
         ["mc_sample", "geo", "year"]
         + [f"latent_{i}" for i in range(latent_dim)]
-        + [f"emissions_{sector}" for sector in EMISSION_SECTORS]
-        + [f"uncertainty_{sector}" for sector in EMISSION_SECTORS]
+        + [f"emissions_{s}" for s in EMISSION_SECTORS]
+        + [f"uncertainty_{s}" for s in EMISSION_SECTORS]
     )
 
-    # Write header to CSV
     with open(OUTPUT_PATH, mode="w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
+        csv.writer(f).writerow(header)
 
-    print(f"Starting {N_MC_SAMPLES} Monte Carlo projections (sequential, single GPU)")
+    print(f"Starting {N_MC_SAMPLES} MC projections (sequential, single GPU)")
     print(f"Output: {OUTPUT_PATH}")
 
-    # Process MC samples sequentially in chunks
     for chunk_start in range(0, N_MC_SAMPLES, CHUNK_SIZE):
         chunk_end = min(chunk_start + CHUNK_SIZE, N_MC_SAMPLES)
-        print(f"Processing MC samples {chunk_start} to {chunk_end - 1}...")
+        print(f"Processing MC samples {chunk_start} – {chunk_end - 1}...")
 
         chunk_results = []
 
         for mc_sample in range(chunk_start, chunk_end):
-            # Deterministic per-sample seeding: sample i always gets the
-            # same RNG state, making results reproducible regardless of
-            # chunk boundaries or resume point.
             random.seed(SEED + mc_sample)
             torch.manual_seed(SEED + mc_sample)
             if DEVICE == "cuda":
@@ -435,32 +431,31 @@ def main():
 
             with torch.no_grad():
                 for country in EU27_COUNTRIES:
-                    country_results = project_country(
-                        country=country,
-                        mc_sample=mc_sample,
-                        dataset=dataset,
-                        projection_dataset=projection_dataset,
-                        vae_model=vae_model,
-                        predictor=predictor,
-                        forecaster=forecaster,
-                        latent_dim=latent_dim,
+                    chunk_results.extend(
+                        project_country(
+                            country=country,
+                            mc_sample=mc_sample,
+                            dataset=dataset,
+                            projection_dataset=projection_dataset,
+                            vae_model=vae_model,
+                            predictor=predictor,
+                            forecaster=forecaster,
+                            latent_dim=latent_dim,
+                            emissions_2024=emissions_2024,
+                        )
                     )
-                    chunk_results.extend(country_results)
 
             if (mc_sample + 1) % 100 == 0:
                 print(f"  Completed MC sample {mc_sample}")
 
-        # Write chunk results to CSV
         with open(OUTPUT_PATH, mode="a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerows(chunk_results)
+            csv.writer(f).writerows(chunk_results)
 
-        print(f"Saved chunk {chunk_start}-{chunk_end - 1}")
+        print(f"Saved chunk {chunk_start}–{chunk_end - 1}")
 
     print(f"\nProjections complete! Results saved to {OUTPUT_PATH}")
-    print(
-        f"Total rows: {N_MC_SAMPLES * len(EU27_COUNTRIES) * len(list(PROJECTION_YEARS))}"
-    )
+    total = N_MC_SAMPLES * len(EU27_COUNTRIES) * len(list(PROJECTION_YEARS))
+    print(f"Total rows: {total}")
 
 
 if __name__ == "__main__":
