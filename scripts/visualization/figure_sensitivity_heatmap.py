@@ -232,7 +232,7 @@ def create_dual_heatmap(mode: VariableMode = "full"):
 
     # Construct file paths based on mode
     sobol_csv = SENSITIVITY_DIR / f"sobol_results_{mode}.csv"
-    spearman_csv = SENSITIVITY_DIR / f"perturbation_results_{mode}.csv"
+    spearman_csv = SENSITIVITY_DIR / f"spearman_results_{mode}.csv"
 
     # Load Sobol data
     if not sobol_csv.exists():
