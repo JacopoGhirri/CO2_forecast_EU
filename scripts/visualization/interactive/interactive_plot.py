@@ -332,6 +332,7 @@ def load_and_process_data():
     if os.path.exists(PYPSA_PATH):
         pypsa_raw = pd.read_csv(PYPSA_PATH)
         pypsa_raw["country"] = pypsa_raw["country"].replace(PYPSA_COUNTRY_MAPPING)
+        pypsa_raw = pypsa_raw[pypsa_raw["sector"] != "transport"] # double counting, keep Transport and drop transport
         pypsa_df = (
             pypsa_raw.groupby(["country", "scenario"], as_index=False)["value"].sum()
         )
