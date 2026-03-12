@@ -649,9 +649,9 @@ with col3:
     has_eea = eea_df is not None and selected_country in eea_df["geo"].values
     has_pypsa = pypsa_df is not None and selected_country in pypsa_df["geo"].values
     st.markdown("**Data availability:**")
-    st.markdown(f"- OECD: {'\u2705' if has_oecd else '\u274c'}")
-    st.markdown(f"- EEA: {'\u2705' if has_eea else '\u274c'}")
-    st.markdown(f"- PyPSA: {'\u2705' if has_pypsa else '\u274c'}")
+    st.markdown(f"- OECD: {'yes' if has_oecd else 'no'}")
+    st.markdown(f"- EEA: {'yes' if has_eea else 'no'}")
+    st.markdown(f"- PyPSA: {'yes' if has_pypsa else 'no'}")
 
 with st.expander("\U0001f4cb View underlying data"):
     tab1, tab2 = st.tabs(["Historical", "Forecast"])
