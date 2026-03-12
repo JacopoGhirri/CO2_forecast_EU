@@ -191,8 +191,27 @@ plt.rcParams.update({
 
 @st.cache_resource
 def load_pickle(path):
-    with open(path, "rb") as f:
-        return pickle.load(f)
+    """Load a pickle that may reference project modules not on sys.path.
+
+    The dataset pickle was saved with class references like
+    ``scripts.elements.datasets.DatasetUnified``. On Streamlit Cloud the
+    repo root is not on sys.path, so unpickling fails with
+    ModuleNotFoundError. We add the repo root temporarily so that
+    ``import scripts.elements.datasets`` resolves correctly.
+    """
+    import sys
+    from pathlib import Path
+
+    repo_root = str(Path(__file__).resolve().parents[3])
+    added = repo_root not in sys.path
+    if added:
+        sys.path.insert(0, repo_root)
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    finally:
+        if added:
+            sys.path.remove(repo_root)
 
 
 @st.cache_data
