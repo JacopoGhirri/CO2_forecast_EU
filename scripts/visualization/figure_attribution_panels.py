@@ -1,23 +1,18 @@
 """
 Figure 3 (Revised): Attribution Panels + 2030 Boxplots.
 
-Four-panel figure:
-  (a) Historical + projected stacked area by country/region
-  (b) Historical + projected stacked area by sector
-  (c) Boxplots of 2030 MC distribution by country/region (Gt CO2)
-  (d) Boxplots of 2030 MC distribution by sector (Gt CO2)
+FONT SIZING RATIONALE:
+  When embedded in a LaTeX two-column paper at \textwidth, figures are
+  displayed at roughly 45-50% of their native pixel size.  All font sizes
+  below are therefore set ~2–2.5× larger than what looks comfortable on
+  screen, so they render legibly on a printed/PDF page.
 
-NOTE: The MC projections now use the 2024-anchored file
-      (mc_projections.csv).  Year 2024 is therefore present in
-      both the historical dataset AND the MC file (as the anchor point).
-      To avoid a discontinuity in the stacked-area panels we:
-        1. Keep all historical data up to and including 2024 from the
-           observed (denormalised dataset) source.
-        2. Use MC mean values from year 2025 onward for the forecast
-           continuation, dropping the 2024 MC row since it is identical
-           to the historical anchor.
-      hist_max_year is set to 2024 so the dashed "forecast starts here"
-      line falls at the correct position.
+  Target minimum readable size in paper: ~7 pt
+  → font.size base: 18 pt  (renders to ~8–9 pt in paper)
+  → axis labels:    20 pt
+  → tick labels:    16 pt
+  → legend:         15 pt
+  → panel letters:  24 pt bold
 
 Usage:
     python -m scripts.visualization.figure_attribution_panels
@@ -30,6 +25,7 @@ import pickle
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import numpy as np
 import pandas as pd
 
@@ -44,7 +40,7 @@ POPULATION_PROJ_PATH = Path("data/full_timeseries/projections/population.csv")
 
 OUTPUT_DIR = Path("outputs/figures")
 
-BASELINE_YEAR = 2024  # first year in MC file; also last observed year
+BASELINE_YEAR = 2024
 PROJECTION_YEAR = 2030
 
 OUTPUT_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Power"]
@@ -91,8 +87,8 @@ COUNTRY_LABELS = {
     "IT": "Italy",
     "ES": "Spain",
     "PL": "Poland",
-    "East Europe": "Other Central &\nEastern Europe",
-    "West Europe": "Other Western\nEurope",
+    "East Europe": "Other C. & E. Europe",
+    "West Europe": "Other W. Europe",
 }
 
 SECTOR_LABELS = {
@@ -104,44 +100,53 @@ SECTOR_LABELS = {
     "Other": "Other",
 }
 
+# ── Intuitive country colours ──────────────────────────────────────────────
 COLORS_COUNTRY = {
-    "DE": "#332288",
-    "FR": "#88CCEE",
-    "IT": "#44AA99",
-    "ES": "#117733",
-    "PL": "#999933",
-    "East Europe": "#DDCC77",
-    "West Europe": "#CC6677",
+    "DE": "#2c2c54",
+    "FR": "#1a5276",
+    "IT": "#5dade2",
+    "ES": "#f4d03f",
+    "PL": "#c0392b",
+    "East Europe": "#a04000",
+    "West Europe": "#229954",
 }
 
+# ── Intuitive sector colours ──────────────────────────────────────────────
 COLORS_SECTOR = {
-    "Power": "#CC6677",
-    "Industry": "#332288",
-    "Mobility": "#117733",
-    "HeatingCooling": "#DDCC77",
-    "Land": "#88CCEE",
-    "Other": "#AA4499",
+    "Mobility": "#2980b9",
+    "Industry": "#717d7e",
+    "Power": "#e67e22",
+    "HeatingCooling": "#e74c3c",
+    "Land": "#27ae60",
+    "Other": "#8e44ad",
 }
 
 
-def setup_nature_style():
+def setup_style():
+    """
+    Font sizes are set ~2× larger than screen-comfortable values so the
+    figure remains legible when scaled down inside a LaTeX document.
+    """
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
             "font.sans-serif": ["Helvetica Neue", "Arial", "DejaVu Sans"],
-            "font.size": 7,
-            "axes.labelsize": 8,
-            "axes.titlesize": 8,
-            "xtick.labelsize": 7,
-            "ytick.labelsize": 7,
-            "legend.fontsize": 6,
-            "axes.linewidth": 0.5,
-            "xtick.major.width": 0.5,
-            "ytick.major.width": 0.5,
-            "xtick.major.size": 3,
-            "ytick.major.size": 3,
+            # ── Core sizes (will render ~half this in paper) ──
+            "font.size": 18,
+            "axes.labelsize": 20,
+            "axes.titlesize": 20,
+            "xtick.labelsize": 16,
+            "ytick.labelsize": 16,
+            "legend.fontsize": 15,
+            # ── Lines & ticks ──
+            "axes.linewidth": 1.0,
+            "xtick.major.width": 1.0,
+            "ytick.major.width": 1.0,
+            "xtick.major.size": 5,
+            "ytick.major.size": 5,
             "axes.spines.top": False,
             "axes.spines.right": False,
+            # ── Backgrounds ──
             "figure.facecolor": "white",
             "axes.facecolor": "white",
             "savefig.facecolor": "white",
@@ -150,6 +155,11 @@ def setup_nature_style():
             "ps.fonttype": 42,
         }
     )
+
+
+# =============================================================================
+# Data helpers (unchanged logic)
+# =============================================================================
 
 
 def load_dataset(path):
@@ -167,20 +177,6 @@ def load_population_data():
 
 
 def prepare_data(dataset, population_df):
-    """
-    Prepare historical and forecast data.
-
-    Historical series: drawn from the dataset object (years 2010–2023) plus
-    the 2024 observed anchor extracted from the MC projections file. The
-    training dataset only covers up to 2023, but the MC file contains
-    identical 2024 values across all samples (the observed anchor), so we
-    average across MC samples and append them to the historical series.
-
-    Forecast series: MC mean from year 2025 onward. Year 2024 is excluded
-    from the forecast continuation to avoid double-counting in the
-    stacked-area plots.
-    """
-    # ---- Historical (from dataset, up to 2023) ----
     keys = dataset.keys
     emi_dataset = pd.DataFrame(dataset.emi_df.cpu().numpy(), columns=OUTPUT_SECTORS)
     historical = pd.concat([keys, emi_dataset], axis=1)
@@ -195,7 +191,6 @@ def prepare_data(dataset, population_df):
     for s in OUTPUT_SECTORS:
         historical[f"{s}_total"] = historical[s] * historical["population"]
 
-    # ---- MC forecasts ----
     df_mc = pd.read_csv(MC_PROJECTIONS_PATH)
     df_mc["geo"] = df_mc["geo"].astype(str)
     for s in OUTPUT_SECTORS:
@@ -209,9 +204,6 @@ def prepare_data(dataset, population_df):
     for s in OUTPUT_SECTORS:
         df_mc[f"{s}_total"] = df_mc[f"{s}_unnorm"] * df_mc["population"]
 
-    # ---- Append 2024 anchor to historical ----
-    # The MC file year==2024 is the observed anchor (identical across samples).
-    # Average across MC samples and append so the stacked area is continuous.
     agg_cols = {"total_CO2": "mean", "population": "first"}
     for s in OUTPUT_SECTORS:
         agg_cols[s + "_unnorm"] = "mean"
@@ -222,7 +214,6 @@ def prepare_data(dataset, population_df):
         .agg(agg_cols)
         .reset_index()
     )
-    # Rename unnorm columns to match historical schema
     for s in OUTPUT_SECTORS:
         anchor_2024[s] = anchor_2024[f"{s}_unnorm"]
     anchor_2024 = anchor_2024[
@@ -231,20 +222,15 @@ def prepare_data(dataset, population_df):
         + [f"{s}_total" for s in OUTPUT_SECTORS]
     ]
     historical = pd.concat([historical, anchor_2024], ignore_index=True)
-
-    # Exclude year==BASELINE_YEAR from the forecast continuation:
-    # it is already covered by the historical series.
     df_mc_forecast = df_mc[df_mc["year"] > BASELINE_YEAR].copy()
 
-    # Summary (mean across mc_samples) for area plots
     agg_dict = {"total_CO2": "mean"}
     for s in OUTPUT_SECTORS:
         agg_dict[f"{s}_total"] = "mean"
     forecast_summary = (
         df_mc_forecast.groupby(["geo", "year"]).agg(agg_dict).reset_index()
     )
-
-    return historical, forecast_summary, df_mc  # df_mc keeps all years for boxplots
+    return historical, forecast_summary, df_mc
 
 
 def build_country_data(historical, forecast_summary):
@@ -268,8 +254,6 @@ def build_country_data(historical, forecast_summary):
 
     hist_df = _aggregate(historical)
     fcast_df = _aggregate(forecast_summary)
-
-    # Concatenate: historical covers up to BASELINE_YEAR; forecast from BASELINE_YEAR+1
     combined = (
         pd.concat([hist_df, fcast_df], ignore_index=True)
         .sort_values("year")
@@ -304,10 +288,8 @@ def build_sector_data(historical, forecast_summary):
 
 
 def build_mc_2030_country(df_mc):
-    """Build per-MC-sample 2030 emissions by country group (in Gt)."""
     df_2030 = df_mc[df_mc["year"] == 2030].copy()
     country_groups = ["DE", "FR", "IT", "ES", "PL", "East Europe", "West Europe"]
-
     records = []
     for mc in df_2030["mc_sample"].unique():
         mc_slice = df_2030[df_2030["mc_sample"] == mc]
@@ -322,16 +304,13 @@ def build_mc_2030_country(df_mc):
             mc_slice[mc_slice["geo"].isin(WEST_EUROPE)]["total_CO2"].sum() / 1e9
         )
         records.append(row)
-
     return pd.DataFrame(records), country_groups
 
 
 def build_mc_2030_sector(df_mc):
-    """Build per-MC-sample 2030 emissions by sector (in Gt)."""
     df_2030 = df_mc[
         (df_mc["year"] == PROJECTION_YEAR) & (df_mc["geo"].isin(EU27_COUNTRIES))
     ].copy()
-
     records = []
     for mc in df_2030["mc_sample"].unique():
         mc_slice = df_2030[df_2030["mc_sample"] == mc]
@@ -339,8 +318,38 @@ def build_mc_2030_sector(df_mc):
         for s in OUTPUT_SECTORS:
             row[s] = mc_slice[f"{s}_total"].sum() / 1e9
         records.append(row)
-
     return pd.DataFrame(records)
+
+
+def _place_legend_above(ax, groups, colors_map, labels_map, ncol=4):
+    """Frameless colour-patch legend placed just above the axes."""
+    handles = [
+        plt.Rectangle(
+            (0, 0), 1, 1, facecolor=colors_map[g], edgecolor="none", alpha=0.88
+        )
+        for g in groups
+    ]
+    labels = [labels_map[g] for g in groups]
+    leg = ax.legend(
+        handles,
+        labels,
+        loc="lower left",
+        bbox_to_anchor=(0.0, 1.03),
+        ncol=ncol,
+        frameon=False,
+        fontsize=15,  # large enough to survive paper scaling
+        handlelength=0.9,
+        handleheight=0.75,
+        handletextpad=0.35,
+        columnspacing=0.7,
+        borderpad=0,
+    )
+    return leg
+
+
+# =============================================================================
+# Main figure
+# =============================================================================
 
 
 def create_panel_figure(
@@ -351,16 +360,26 @@ def create_panel_figure(
     mc_sector_df,
     hist_max_year,
 ):
-    setup_nature_style()
+    setup_style()
 
-    fig, axes = plt.subplots(
+    # Large native size — will be scaled down in LaTeX
+    fig = plt.figure(figsize=(16, 14))
+    gs = gridspec.GridSpec(
         2,
         2,
-        figsize=(7.2, 6.0),
-        gridspec_kw={"height_ratios": [1.2, 1], "hspace": 0.35, "wspace": 0.15},
+        figure=fig,
+        height_ratios=[1.45, 1],
+        hspace=0.45,  # tighter vertical gap between rows
+        wspace=0.30,
+        top=0.91,
+        bottom=0.10,
+        left=0.09,
+        right=0.98,
     )
-    ax1, ax2 = axes[0]
-    ax3, ax4 = axes[1]
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax3 = fig.add_subplot(gs[1, 0])
+    ax4 = fig.add_subplot(gs[1, 1])
 
     # Convert to Gt
     plot_country = combined_country.copy()
@@ -372,7 +391,6 @@ def create_panel_figure(
 
     ylabel = "CO2 emissions (Gt)"
 
-    # Order by 2030 emissions
     data_2030 = combined_country[combined_country["year"] == PROJECTION_YEAR]
     ordered_countries = sorted(
         MAJOR_COUNTRIES, key=lambda g: data_2030[g].values[0], reverse=True
@@ -384,167 +402,120 @@ def create_panel_figure(
     ].iloc[0]
     ordered_sectors = sector_2030.sort_values(ascending=False).index.tolist()
 
-    def _stacked_area(ax, df_plot, groups, colors_map, labels_map):
+    def _stacked_area(ax, df_plot, groups, colors_map):
         ax.stackplot(
             df_plot["year"],
             *[df_plot[g] for g in groups],
-            labels=[labels_map[g] for g in groups],
             colors=[colors_map[g] for g in groups],
-            alpha=0.9,
+            alpha=0.88,
             linewidth=0,
         )
         cumsum = np.zeros(len(df_plot))
         for g in groups:
             cumsum += df_plot[g].values
-            ax.plot(df_plot["year"], cumsum, color="white", linewidth=0.4, alpha=0.6)
+            ax.plot(df_plot["year"], cumsum, color="white", linewidth=0.7, alpha=0.7)
         ax.axvspan(
-            hist_max_year, PROJECTION_YEAR, alpha=0.04, color="#000000", zorder=0
+            hist_max_year, PROJECTION_YEAR, alpha=0.05, color="#000000", zorder=0
         )
         ax.axvline(
-            hist_max_year, color="#2c3e50", linestyle="--", linewidth=0.7, alpha=0.6
+            hist_max_year, color="#444444", linestyle="--", linewidth=1.2, alpha=0.7
         )
-        ax.set_xlabel("Year")
+        ax.set_xlabel("Year", labelpad=4)
         ax.set_xlim(2010, PROJECTION_YEAR)
         ax.set_xticks([2010, 2015, 2020, 2025, 2030])
         ax.set_ylim(0, None)
-        ax.yaxis.grid(True, linestyle="-", alpha=0.15, color="#666666", linewidth=0.3)
+        ax.yaxis.grid(True, linestyle="-", alpha=0.15, color="#666666", linewidth=0.5)
         ax.set_axisbelow(True)
 
-    # ---- (a) Country stacked area ----
-    _stacked_area(
-        ax1, plot_country, ordered_country_groups, COLORS_COUNTRY, COUNTRY_LABELS
-    )
+    # ── (a) Country stacked area ──────────────────────────────────────────
+    _stacked_area(ax1, plot_country, ordered_country_groups, COLORS_COUNTRY)
     ax1.set_ylabel(ylabel)
-    leg1 = ax1.legend(
-        loc="upper right",
-        frameon=True,
-        framealpha=0.95,
-        edgecolor="#cccccc",
-        fontsize=5.5,
-        handletextpad=0.4,
-        labelspacing=0.25,
-        borderpad=0.4,
-        handlelength=1.2,
-    )
-    leg1.get_frame().set_linewidth(0.3)
-    ax1.text(
-        -0.12,
-        1.05,
-        "a",
-        transform=ax1.transAxes,
-        fontsize=10,
-        fontweight="bold",
-        va="top",
-        ha="left",
+    _place_legend_above(
+        ax1, ordered_country_groups, COLORS_COUNTRY, COUNTRY_LABELS, ncol=4
     )
 
-    # ---- (b) Sector stacked area ----
-    _stacked_area(ax2, plot_sector, ordered_sectors, COLORS_SECTOR, SECTOR_LABELS)
-    leg2 = ax2.legend(
-        loc="upper right",
-        frameon=True,
-        framealpha=0.95,
-        edgecolor="#cccccc",
-        fontsize=5.5,
-        handletextpad=0.4,
-        labelspacing=0.25,
-        borderpad=0.4,
-        handlelength=1.2,
-    )
-    leg2.get_frame().set_linewidth(0.3)
-    ax2.text(
-        -0.05,
-        1.05,
-        "b",
-        transform=ax2.transAxes,
-        fontsize=10,
-        fontweight="bold",
-        va="top",
-        ha="left",
-    )
+    # ── (b) Sector stacked area ───────────────────────────────────────────
+    _stacked_area(ax2, plot_sector, ordered_sectors, COLORS_SECTOR)
+    _place_legend_above(ax2, ordered_sectors, COLORS_SECTOR, SECTOR_LABELS, ncol=3)
 
-    # ---- (c) Country boxplots ----
+    # ── (c) Country boxplots ──────────────────────────────────────────────
     bp_data_country = [mc_country_df[g].values for g in ordered_country_groups]
-    bp_labels_country = [
-        COUNTRY_LABELS[g].replace("\n", " ") for g in ordered_country_groups
-    ]
+    bp_labels_country = [COUNTRY_LABELS[g] for g in ordered_country_groups]
     bp = ax3.boxplot(
         bp_data_country,
         vert=True,
         patch_artist=True,
-        widths=0.6,
-        medianprops=dict(color="black", linewidth=1.0),
-        whiskerprops=dict(linewidth=0.6, color="#555555"),
-        capprops=dict(linewidth=0.6, color="#555555"),
+        widths=0.55,
+        medianprops=dict(color="black", linewidth=1.8),
+        whiskerprops=dict(linewidth=1.1, color="#555555"),
+        capprops=dict(linewidth=1.1, color="#555555"),
         flierprops=dict(
-            marker=".",
-            markersize=1.5,
-            markerfacecolor="#aaaaaa",
-            markeredgecolor="none",
+            marker=".", markersize=3, markerfacecolor="#aaaaaa", markeredgecolor="none"
         ),
     )
     for patch, g in zip(bp["boxes"], ordered_country_groups):
         patch.set_facecolor(COLORS_COUNTRY[g])
         patch.set_alpha(0.85)
-        patch.set_linewidth(0.5)
-    ax3.set_xticklabels(bp_labels_country, rotation=30, ha="right", fontsize=6)
-    ax3.set_ylabel(f"{PROJECTION_YEAR} projected CO₂ (Gt)")
-    ax3.yaxis.grid(True, linestyle="-", alpha=0.15, color="#666666", linewidth=0.3)
+        patch.set_linewidth(0.8)
+    ax3.set_xticklabels(bp_labels_country, rotation=35, ha="right", fontsize=15)
+    ax3.set_ylabel(f"{PROJECTION_YEAR} projected CO2 (Gt)")
+    ax3.yaxis.grid(True, linestyle="-", alpha=0.15, color="#666666", linewidth=0.5)
     ax3.set_axisbelow(True)
-    ax3.text(
-        -0.12,
-        1.05,
-        "c",
-        transform=ax3.transAxes,
-        fontsize=10,
-        fontweight="bold",
-        va="top",
-        ha="left",
-    )
 
-    # ---- (d) Sector boxplots ----
+    # ── (d) Sector boxplots ───────────────────────────────────────────────
     bp_data_sector = [mc_sector_df[s].values for s in ordered_sectors]
     bp_labels_sector = [SECTOR_LABELS[s] for s in ordered_sectors]
     bp2 = ax4.boxplot(
         bp_data_sector,
         vert=True,
         patch_artist=True,
-        widths=0.6,
-        medianprops=dict(color="black", linewidth=1.0),
-        whiskerprops=dict(linewidth=0.6, color="#555555"),
-        capprops=dict(linewidth=0.6, color="#555555"),
+        widths=0.55,
+        medianprops=dict(color="black", linewidth=1.8),
+        whiskerprops=dict(linewidth=1.1, color="#555555"),
+        capprops=dict(linewidth=1.1, color="#555555"),
         flierprops=dict(
-            marker=".",
-            markersize=1.5,
-            markerfacecolor="#aaaaaa",
-            markeredgecolor="none",
+            marker=".", markersize=3, markerfacecolor="#aaaaaa", markeredgecolor="none"
         ),
     )
     for patch, s in zip(bp2["boxes"], ordered_sectors):
         patch.set_facecolor(COLORS_SECTOR[s])
         patch.set_alpha(0.85)
-        patch.set_linewidth(0.5)
-
-    ax4.set_xticklabels(bp_labels_sector, rotation=30, ha="right", fontsize=6)
-    ax4.yaxis.grid(True, linestyle="-", alpha=0.15, color="#666666", linewidth=0.3)
+        patch.set_linewidth(0.8)
+    ax4.set_xticklabels(bp_labels_sector, rotation=35, ha="right", fontsize=15)
+    ax4.yaxis.grid(True, linestyle="-", alpha=0.15, color="#666666", linewidth=0.5)
     ax4.set_axisbelow(True)
-    ax4.text(
-        -0.05,
-        1.05,
-        "d",
-        transform=ax4.transAxes,
-        fontsize=10,
-        fontweight="bold",
-        va="top",
-        ha="left",
-    )
 
     for ax in [ax1, ax2, ax3, ax4]:
-        ax.spines["bottom"].set_linewidth(0.5)
-        ax.spines["left"].set_linewidth(0.5)
+        ax.spines["bottom"].set_linewidth(1.0)
+        ax.spines["left"].set_linewidth(1.0)
         ax.spines["bottom"].set_color("#333333")
         ax.spines["left"].set_color("#333333")
-        ax.tick_params(axis="both", which="both", length=3, width=0.5)
+        ax.tick_params(axis="both", which="both", length=5, width=1.0)
+
+    # ── Panel letters in figure coordinates — guaranteed consistent alignment ──
+    # Render first so bbox positions are computed, then read axes corners.
+    fig.canvas.draw()
+
+    def _panel_letter(ax, letter, x_offset=-0.055):
+        """Place panel letter just above-left of the axes top-left corner,
+        using figure coordinates so all four labels sit at the same relative
+        position regardless of legend height."""
+        bbox = ax.get_position()  # fraction of figure
+        fig.text(
+            bbox.x0 + x_offset * bbox.width,
+            bbox.y1 + 0.012,  # small fixed gap above axes top
+            letter,
+            fontsize=24,
+            fontweight="bold",
+            va="bottom",
+            ha="left",
+            transform=fig.transFigure,
+        )
+
+    _panel_letter(ax1, "a", x_offset=-0.055)
+    _panel_letter(ax2, "b", x_offset=-0.040)
+    _panel_letter(ax3, "c", x_offset=-0.055)
+    _panel_letter(ax4, "d", x_offset=-0.040)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     for fmt in ["png", "pdf", "svg"]:
@@ -560,30 +531,20 @@ def create_panel_figure(
 
 def main():
     print("=" * 70)
-    print("GENERATING FIGURE 3 (REVISED): ATTRIBUTION PANELS + BOXPLOTS")
-    print(f"  MC projections: {MC_PROJECTIONS_PATH}")
-    print(f"  Baseline year : {BASELINE_YEAR}")
+    print("GENERATING FIGURE 3: ATTRIBUTION PANELS + BOXPLOTS")
     print("=" * 70)
 
     dataset = load_dataset(DATASET_PATH)
     population_df = load_population_data()
 
-    print("Preparing data...")
     historical, forecast_summary, df_mc = prepare_data(dataset, population_df)
     combined_country, country_groups = build_country_data(historical, forecast_summary)
     combined_sector = build_sector_data(historical, forecast_summary)
 
-    # hist_max_year: last year present in the historical (observed) dataset.
-    # With 2024 data included in training, this will be 2024; otherwise 2023.
     hist_max_year = int(historical["year"].max())
-    print(f"  Historical data ends at: {hist_max_year}")
-    print(f"  Forecast continuation:   {hist_max_year + 1} → {PROJECTION_YEAR}")
-
-    print("Building MC boxplot data...")
     mc_country_df, _ = build_mc_2030_country(df_mc)
     mc_sector_df = build_mc_2030_sector(df_mc)
 
-    print("Creating 4-panel figure...")
     create_panel_figure(
         combined_country,
         country_groups,
@@ -615,7 +576,6 @@ def main():
             f"90%=[{vals.quantile(0.05):.3f}, {vals.quantile(0.95):.3f}]"
         )
 
-
     # ── Numbers for paper Section: "Uneven progress" ───────────────────────
     print("\n" + "=" * 60)
     print("NUMBERS FOR PAPER — Section: Uneven progress")
@@ -630,7 +590,12 @@ def main():
     hist_pct = (eu_2024 - eu_2010) / eu_2010 * 100
 
     # 2030 from MC
-    eu_mc_2030 = mc_country_df[["DE", "FR", "IT", "ES", "PL", "East Europe", "West Europe"]].sum(axis=1).mean() * 1e9
+    eu_mc_2030 = (
+        mc_country_df[["DE", "FR", "IT", "ES", "PL", "East Europe", "West Europe"]]
+        .sum(axis=1)
+        .mean()
+        * 1e9
+    )
     eu_2030_total = eu_mc_2030  # Gt → tonnes already (*1e9 above)
     total_pct_from_2010 = (eu_mc_2030 - eu_2010) / eu_2010 * 100
 
@@ -658,8 +623,10 @@ def main():
             v2010 = hist_sector_2010[s_col].sum()
             v2030 = mc_sector_df[s].median() * 1e9
             pct = (v2030 - v2010) / v2010 * 100 if v2010 > 0 else float("nan")
-            print(f"    {s:<16s}: 2010={v2010 / 1e9:.3f} Gt  2030≈{v2030 / 1e9:.3f} Gt  Δ={pct:+.1f}%")
-    print("\nFigure 3 (revised) generation complete!")
+            print(
+                f"    {s:<16s}: 2010={v2010 / 1e9:.3f} Gt  2030≈{v2030 / 1e9:.3f} Gt  Δ={pct:+.1f}%"
+            )
+    print("\nDone!")
 
 
 if __name__ == "__main__":
