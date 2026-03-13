@@ -2,7 +2,7 @@
 Figure 2: Sectoral Emission Changes Heatmap (% change, bivariate palette).
 
 Wide heatmap (countries as columns, sectors as rows) showing percentage
-change in emissions 2023 → 2030 with a bivariate colour scheme:
+change in emissions 2024 → 2030 with a bivariate colour scheme:
 
   - Hue (red–grey–blue): direction of emission change
       Red = increasing, Grey = near zero, Blue = decreasing
@@ -203,69 +203,52 @@ def load_population_data():
 def compute_sector_data(dataset, population_df):
     """
     Compute per-country per-sector:
-      - percentage change 2023 → 2030
+      - percentage change 2024 → 2030
       - mean model uncertainty at 2030
+
+    The training dataset only covers up to 2023, so the 2024 baseline is
+    extracted from the MC projections file where year==2024 contains the
+    observed anchor (identical across all MC samples).
 
     Returns DataFrame with columns:
         geo, sector, pct_change, mean_uncertainty
     """
-    # --- Historical 2023 ---
-    keys = dataset.keys
-    emi = pd.DataFrame(dataset.emi_df.cpu().numpy(), columns=OUTPUT_SECTORS)
-    hist = pd.concat([keys, emi], axis=1)
-
-    for s in OUTPUT_SECTORS:
-        m = dataset.precomputed_scaling_params[s]["mean"]
-        sd = dataset.precomputed_scaling_params[s]["std"]
-        hist[s] = hist[s] * sd + m
-
-    hist = hist.merge(population_df, on=["geo", "year"], how="left")
-    for s in OUTPUT_SECTORS:
-        hist[f"{s}_total"] = hist[s] * hist["population"]  # tonnes
-
-    hist_2023 = hist[hist["year"] == 2023].copy()
-
-    # --- MC 2030 ---
+    # --- Load MC projections (contains both 2024 anchor and 2030 forecasts) ---
     df_mc = pd.read_csv(MC_PROJECTIONS_PATH)
     df_mc["geo"] = df_mc["geo"].astype(str)
-
     for s in OUTPUT_SECTORS:
         m = dataset.precomputed_scaling_params[s]["mean"]
         sd = dataset.precomputed_scaling_params[s]["std"]
         df_mc[f"{s}_unnorm"] = np.clip(df_mc[f"emissions_{s}"] * sd + m, 0, None)
-
     df_mc = df_mc.merge(population_df, on=["geo", "year"], how="left")
     for s in OUTPUT_SECTORS:
-        df_mc[f"{s}_total"] = df_mc[f"{s}_unnorm"] * df_mc["population"]  # tonnes
+        df_mc[f"{s}_total"] = df_mc[f"{s}_unnorm"] * df_mc["population"]
+
+    # 2024 anchor: all MC samples are identical, take the mean to be safe
+    df_2024 = df_mc[df_mc["year"] == 2024].copy()
+    hist_2024 = df_2024.groupby("geo", as_index=False).agg(
+        {f"{s}_total": "mean" for s in OUTPUT_SECTORS}
+    )
 
     df_2030 = df_mc[df_mc["year"] == 2030].copy()
 
-    # --- Per country, per sector ---
     records = []
     for geo in EU27_COUNTRIES:
-        g23 = hist_2023[hist_2023["geo"] == geo]
+        g24 = hist_2024[hist_2024["geo"] == geo]
         g30 = df_2030[df_2030["geo"] == geo]
-        if g23.empty or g30.empty:
+        if g24.empty or g30.empty:
             continue
 
-        pop_2030 = g30["population"].iloc[0]  # thousands
+        pop_2030 = g30["population"].iloc[0]
 
         for s in OUTPUT_SECTORS:
-            e2023 = g23[f"{s}_total"].values[0]
+            e2024 = g24[f"{s}_total"].values[0]
             e2030_mean = g30[f"{s}_total"].mean()
 
-            # % change
-            if abs(e2023) > 0:
-                pct = ((e2030_mean - e2023) / abs(e2023)) * 100
-            else:
-                pct = 0.0
+            pct = ((e2030_mean - e2024) / abs(e2024)) * 100 if abs(e2024) > 0 else 0.0
 
-            # Mean learned uncertainty (averaged across MC samples)
             unc_col = f"uncertainty_{s}"
-            if unc_col in g30.columns:
-                mean_unc = g30[unc_col].mean()
-            else:
-                mean_unc = np.nan
+            mean_unc = g30[unc_col].mean() if unc_col in g30.columns else np.nan
 
             records.append(
                 {
@@ -273,7 +256,7 @@ def compute_sector_data(dataset, population_df):
                     "sector": s,
                     "pct_change": pct,
                     "mean_uncertainty": mean_unc,
-                    "emissions_2023": e2023,
+                    "emissions_2024": e2024,
                     "emissions_2030": e2030_mean,
                     "population_2030": pop_2030,
                 }
@@ -283,13 +266,11 @@ def compute_sector_data(dataset, population_df):
 
     # --- EU27 aggregates ---
     for s in OUTPUT_SECTORS:
-        # Sum emissions across countries
-        e2023_eu = hist_2023[hist_2023["geo"].isin(EU27_COUNTRIES)][f"{s}_total"].sum()
+        e2024_eu = hist_2024[hist_2024["geo"].isin(EU27_COUNTRIES)][f"{s}_total"].sum()
         eu_mc = df_2030[df_2030["geo"].isin(EU27_COUNTRIES)]
         e2030_eu = eu_mc.groupby("mc_sample")[f"{s}_total"].sum().mean()
-
         pct_eu = (
-            ((e2030_eu - e2023_eu) / abs(e2023_eu)) * 100 if abs(e2023_eu) > 0 else 0
+            ((e2030_eu - e2024_eu) / abs(e2024_eu)) * 100 if abs(e2024_eu) > 0 else 0
         )
 
         # Uncertainty for EU: placeholder — will be filled in main()
@@ -299,8 +280,8 @@ def compute_sector_data(dataset, population_df):
                 "geo": "EU27",
                 "sector": s,
                 "pct_change": pct_eu,
-                "mean_uncertainty": np.nan,  # computed below
-                "emissions_2023": e2023_eu,
+                "mean_uncertainty": np.nan,
+                "emissions_2024": e2024_eu,
                 "emissions_2030": e2030_eu,
                 "population_2030": np.nan,
             }
@@ -331,18 +312,15 @@ def compute_eu_uncertainty(df, population_weighted):
         if sec.empty:
             eu_unc[s] = np.nan
             continue
-
         if population_weighted:
             total_pop = sec["population_2030"].sum()
-            if total_pop > 0:
-                eu_unc[s] = (
-                    sec["mean_uncertainty"] * sec["population_2030"]
-                ).sum() / total_pop
-            else:
-                eu_unc[s] = sec["mean_uncertainty"].mean()
+            eu_unc[s] = (
+                (sec["mean_uncertainty"] * sec["population_2030"]).sum() / total_pop
+                if total_pop > 0
+                else sec["mean_uncertainty"].mean()
+            )
         else:
             eu_unc[s] = sec["mean_uncertainty"].mean()
-
     return eu_unc
 
 
@@ -377,7 +355,7 @@ def classify_confidence(unc_value, cutoffs):
     unc_value > q_high → low confidence (0)
     """
     if pd.isna(unc_value):
-        return 1  # default to medium if missing
+        return 1
     if unc_value <= cutoffs[0]:
         return 2
     elif unc_value <= cutoffs[1]:
@@ -429,20 +407,12 @@ def create_heatmap(changes_df, change_thresholds, confidence_cutoffs):
     color_matrix = np.empty((n_rows, n_cols), dtype=object)
     for i, sector in enumerate(row_order):
         for j, geo in enumerate(col_order):
-            pct_val = pct_pivot.iloc[i, j]
-            unc_val = unc_pivot.iloc[i, j]
-
-            chg_level = classify_change(pct_val, change_thresholds)
-            conf_level = classify_confidence(unc_val, confidence_cutoffs)
+            chg_level = classify_change(pct_pivot.iloc[i, j], change_thresholds)
+            conf_level = classify_confidence(unc_pivot.iloc[i, j], confidence_cutoffs)
             color_matrix[i, j] = BIVARIATE_COLORS[(chg_level, conf_level)]
 
-    # --- Plot ---
-    # fig_width = max(16, n_cols * 0.42 + 2.5)
-    # fig_height = n_rows * 0.55 + 2.0
-    # fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     fig, ax = plt.subplots(figsize=(16, 6))
 
-    # Draw coloured cells as rectangles
     for i in range(n_rows):
         for j in range(n_cols):
             rect = plt.Rectangle(
@@ -557,7 +527,7 @@ def create_heatmap(changes_df, change_thresholds, confidence_cutoffs):
 
     # Main title annotation (values are %)
     ax.set_title(
-        "Change in emissions, 2023\u20132030 (%)",
+        "Change in emissions, 2024\u20132030 (%)",
         fontsize=8,
         pad=40,
         fontweight="normal",
@@ -654,18 +624,18 @@ def main():
 
     # Summary
     print(f"\n{'=' * 70}")
-    print("SUMMARY (% change, 2023 → 2030)")
+    print("SUMMARY (% change, 2024 ->2030)")
     print(f"{'=' * 70}")
     print(f"\n{'Sector':<20s} {'EU27':>8s}  {'Mean':>8s}  {'Min':>8s}  {'Max':>8s}")
     print("-" * 56)
     for s in OUTPUT_SECTORS:
         sd = changes_df[changes_df["sector"] == s]
         eu = sd[sd["geo"] == "EU27"]["pct_change"].values
-        eu_val = eu[0] if len(eu) > 0 else np.nan
+        eu_v = eu[0] if len(eu) > 0 else np.nan
         cd = sd[sd["geo"].isin(EU27_COUNTRIES)]["pct_change"].dropna()
         print(
             f"{SECTOR_DISPLAY.get(s, s).replace(chr(10), ' '):<20s} "
-            f"{eu_val:>+7.0f}%  {cd.mean():>+7.0f}%  {cd.min():>+7.0f}%  {cd.max():>+7.0f}%"
+            f"{eu_v:>+7.0f}%  {cd.mean():>+7.0f}%  {cd.min():>+7.0f}%  {cd.max():>+7.0f}%"
         )
 
     print("\nDone!")

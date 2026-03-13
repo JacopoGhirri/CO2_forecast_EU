@@ -327,18 +327,27 @@ def load_and_process_data():
         eea_df["value_Mt"] = eea_df["Gapfilled"] / 1000
         eea_df = eea_df[["geo", "scenario", "value_Mt"]]
 
-    # PyPSA
-    pypsa_df = None
-    if os.path.exists(PYPSA_PATH):
-        pypsa_raw = pd.read_csv(PYPSA_PATH)
-        pypsa_raw["country"] = pypsa_raw["country"].replace(PYPSA_COUNTRY_MAPPING)
-        pypsa_raw = pypsa_raw[pypsa_raw["sector"] != "transport"] # double counting, keep Transport and drop transport
-        pypsa_df = (
-            pypsa_raw.groupby(["country", "scenario"], as_index=False)["value"].sum()
-        )
-        pypsa_df["value_Mt"] = pypsa_df["value"] / 1e6
-        pypsa_df = pypsa_df.rename(columns={"country": "geo"})
-        pypsa_df = pypsa_df[["geo", "scenario", "value_Mt"]]
+        # PyPSA
+        pypsa_df = None
+        if os.path.exists(PYPSA_PATH):
+            pypsa_raw = pd.read_csv(PYPSA_PATH)
+            pypsa_raw["country"] = pypsa_raw["country"].replace(PYPSA_COUNTRY_MAPPING)
+            totals = pypsa_raw.groupby(
+                ["country", "scenario"], as_index=False
+            )["value"].sum()
+            # Prefer pre-computed EU27 totals from PyPSA over summing countries
+            eu_rows = pypsa_raw[pypsa_raw["country"] == "EU27"]
+            if not eu_rows.empty:
+                eu_totals = eu_rows.groupby("scenario", as_index=False)["value"].sum()
+                eu_totals["country"] = "EU27"
+                totals = pd.concat([
+                    totals[totals["country"] != "EU27"],
+                    eu_totals,
+                ], ignore_index=True)
+            totals["value_Mt"] = totals["value"] / 1e6
+            pypsa_df = totals.rename(columns={"country": "geo"})[
+                ["geo", "scenario", "value_Mt"]
+            ]
 
     # EU-27 FF55 target: 45% of 1990 emissions
     eu27_ff55_mt = np.nan

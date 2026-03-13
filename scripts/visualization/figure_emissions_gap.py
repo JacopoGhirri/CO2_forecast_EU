@@ -1,5 +1,5 @@
 """
-Figure 1: Projected Emission Change from 2023 Baseline (paper-ready).
+Figure 1: Projected Emission Change from 2024 Baseline (paper-ready).
 
 Three-panel figure:
   (a) EU27 aggregate — % change by model/source (bar chart)
@@ -19,13 +19,13 @@ UNIT CONVENTIONS:
   - PyPSA 'value': tonnes -> /1e6 = Mt
 
 Usage:
-    python -m scripts.visualization.figure_emissions_change_from_2023
+    python -m scripts.visualization.figure_emissions_change_from_2024
 
 Outputs:
     - outputs/figures/fig1_emissions_change.pdf
     - outputs/figures/fig1_emissions_change.png
     - outputs/figures/fig1_emissions_change.svg
-    - outputs/tables/fig1_change_from_2023_summary.csv
+    - outputs/tables/fig1_change_from_2024_summary.csv
 """
 
 import pickle
@@ -243,20 +243,36 @@ def get_2030_mc_mt(dataset, population_df):
     return result
 
 
-def get_2023_baseline_mt(dataset, population_df):
-    """2023 historical total CO2 per country in Mt."""
-    keys = dataset.keys
-    emi = pd.DataFrame(dataset.emi_df.cpu().numpy(), columns=OUTPUT_SECTORS)
-    hist = pd.concat([keys, emi], axis=1)
+def get_2024_baseline_mt(dataset, population_df):
+    """2024 observed total CO2 per country in Mt.
+
+    The training dataset only covers up to 2023, so 2024 baselines are read
+    from the MC projections file where year==2024 contains the observed
+    anchor (identical across all MC samples). We denormalise using the
+    training-set scaling parameters and convert kg/hab * population(thousands)
+    to Mt.
+    """
+    df_mc = pd.read_csv(MC_PROJECTIONS_PATH)
+    df_mc["geo"] = df_mc["geo"].astype(str)
+
+    # Keep only the 2024 anchor rows (one MC sample is enough since all are
+    # identical for year 2024, but we take the mean to be safe).
+    df_2024 = df_mc[df_mc["year"] == 2024].copy()
+
     for s in OUTPUT_SECTORS:
         m = dataset.precomputed_scaling_params[s]["mean"]
         sd = dataset.precomputed_scaling_params[s]["std"]
-        hist[s] = hist[s] * sd + m
-    hist = hist.merge(population_df, on=["geo", "year"], how="left")
-    hist["total_CO2"] = hist[OUTPUT_SECTORS].sum(axis=1) * hist["population"]
+        df_2024[f"{s}_unnorm"] = np.clip(df_2024[f"emissions_{s}"] * sd + m, 0, None)
 
-    h23 = hist[hist["year"] == 2023]
-    baseline = {row["geo"]: row["total_CO2"] / 1e6 for _, row in h23.iterrows()}
+    df_2024 = df_2024.merge(population_df, on=["geo", "year"], how="left")
+    df_2024["total_CO2"] = (
+        df_2024[[f"{s}_unnorm" for s in OUTPUT_SECTORS]].sum(axis=1)
+        * df_2024["population"]
+    )
+
+    # Average across MC samples (all identical for 2024, but robust)
+    per_country = df_2024.groupby("geo")["total_CO2"].mean() / 1e6
+    baseline = per_country.to_dict()
     baseline["EU27"] = sum(v for k, v in baseline.items() if k in EU27_COUNTRIES)
     return baseline
 
@@ -319,9 +335,16 @@ def load_pypsa_2030_mt():
     df = pd.read_csv(PYPSA_PATH)
     df["country"] = df["country"].replace(PYPSA_COUNTRY_MAPPING)
     totals = df.groupby(["country", "scenario"], as_index=False)["value"].sum()
-    return {
+    result = {
         (r["country"], r["scenario"]): r["value"] / 1e6 for _, r in totals.iterrows()
     }
+    # Prefer pre-computed EU27 totals from PyPSA over summing countries
+    eu_rows = df[df["country"] == "EU27"]
+    if not eu_rows.empty:
+        eu_totals = eu_rows.groupby("scenario", as_index=False)["value"].sum()
+        for _, r in eu_totals.iterrows():
+            result[("EU27", r["scenario"])] = r["value"] / 1e6
+    return result
 
 
 # =============================================================================
@@ -338,7 +361,6 @@ def build_comparison(baseline_mt, mc_2030_mt, oecd_2030, eea_2030, pypsa_2030):
             continue
         d = {"geo": geo, "baseline_mt": base}
 
-        # This study
         mc = mc_2030_mt.get(geo)
         if mc is not None:
             d["mc_pct"] = ((mc - base) / base) * 100
@@ -346,7 +368,6 @@ def build_comparison(baseline_mt, mc_2030_mt, oecd_2030, eea_2030, pypsa_2030):
         else:
             d["mc_pct"] = d["mc_mt"] = np.nan
 
-        # OECD
         for scen, key in [("BAU1", "oecd_bau1"), ("ET1", "oecd_et1")]:
             v = oecd_2030.get((geo, scen))
             if v is not None:
@@ -355,7 +376,6 @@ def build_comparison(baseline_mt, mc_2030_mt, oecd_2030, eea_2030, pypsa_2030):
             else:
                 d[f"{key}_pct"] = d[f"{key}_mt"] = np.nan
 
-        # EEA
         for scen, key in [("WAM", "eea_wam"), ("WEM", "eea_wem")]:
             v = eea_2030.get((geo, scen))
             if v is not None:
@@ -364,7 +384,6 @@ def build_comparison(baseline_mt, mc_2030_mt, oecd_2030, eea_2030, pypsa_2030):
             else:
                 d[f"{key}_pct"] = d[f"{key}_mt"] = np.nan
 
-        # PyPSA
         v = pypsa_2030.get((geo, "base"))
         if v is not None:
             d["pypsa_base_pct"] = ((v - base) / base) * 100
@@ -388,7 +407,7 @@ def build_comparison(baseline_mt, mc_2030_mt, oecd_2030, eea_2030, pypsa_2030):
 
 
 # =============================================================================
-# Figure
+# Figure  (unchanged from original except axis labels)
 # =============================================================================
 
 
@@ -415,27 +434,18 @@ def create_figure(df, ff55_pct, ff55_mt):
     # =====================================================================
     # Panel (a): EU27 % change — grouped bars
     # =====================================================================
-    vals_pct = []
-    colors_pct = []
-    labels_pct = []
-    for key in src_keys:
-        v = eu.get(f"{key}_pct", np.nan)
-        vals_pct.append(v if pd.notna(v) else 0)
-        colors_pct.append(SOURCES[key]["color"])
-        labels_pct.append(SOURCES[key]["label"])
 
-    x_a = np.arange(len(src_keys))
+    vals_pct = [eu.get(f"{k}_pct", np.nan) for k in src_keys]
+    vals_pct_ = [v if pd.notna(v) else 0 for v in vals_pct]
     bars_a = ax_a.bar(
-        x_a,
-        vals_pct,
-        color=colors_pct,
+        np.arange(len(src_keys)),
+        vals_pct_,
+        color=[SOURCES[k]["color"] for k in src_keys],
         width=0.65,
         edgecolor="white",
         linewidth=0.5,
         zorder=3,
     )
-
-    # Grey out missing bars
     for i, key in enumerate(src_keys):
         if pd.isna(eu.get(f"{key}_pct", np.nan)):
             bars_a[i].set_alpha(0.15)
@@ -454,11 +464,11 @@ def create_figure(df, ff55_pct, ff55_mt):
     )
 
     ax_a.axhline(0, color="#2c3e50", linewidth=0.8, zorder=2)
-    ax_a.set_xticks(x_a)
+    ax_a.set_xticks(np.arange(len(src_keys)))
     ax_a.set_xticklabels(
         [SOURCES[k]["label"] for k in src_keys], rotation=40, ha="right", fontsize=5.5
     )
-    ax_a.set_ylabel("Change from 2023 (%)")
+    ax_a.set_ylabel("Change from 2024 (%)")
     ax_a.yaxis.grid(True, linestyle="-", alpha=0.2, linewidth=0.3)
     ax_a.set_axisbelow(True)
     ax_a.set_title("EU-27", fontsize=9, fontweight="bold", pad=8)
@@ -476,18 +486,13 @@ def create_figure(df, ff55_pct, ff55_mt):
     # =====================================================================
     # Panel (b): EU27 Mt change — grouped bars
     # =====================================================================
-    vals_mt = []
-    colors_mt = []
-    for key in src_keys:
-        v = eu.get(f"{key}_mt", np.nan)
-        vals_mt.append(v if pd.notna(v) else 0)
-        colors_mt.append(SOURCES[key]["color"])
 
-    x_b = np.arange(len(src_keys))
+    vals_mt = [eu.get(f"{k}_mt", np.nan) for k in src_keys]
+    vals_mt_ = [v if pd.notna(v) else 0 for v in vals_mt]
     bars_b = ax_b.bar(
-        x_b,
-        vals_mt,
-        color=colors_mt,
+        np.arange(len(src_keys)),
+        vals_mt_,
+        color=[SOURCES[k]["color"] for k in src_keys],
         width=0.65,
         edgecolor="white",
         linewidth=0.5,
@@ -511,11 +516,11 @@ def create_figure(df, ff55_pct, ff55_mt):
     )
 
     ax_b.axhline(0, color="#2c3e50", linewidth=0.8, zorder=2)
-    ax_b.set_xticks(x_b)
+    ax_b.set_xticks(np.arange(len(src_keys)))
     ax_b.set_xticklabels(
         [SOURCES[k]["label"] for k in src_keys], rotation=40, ha="right", fontsize=5.5
     )
-    ax_b.set_ylabel("Change from 2023 (Mt CO2)")
+    ax_b.set_ylabel("Change from 2024 (Mt CO2)")
     ax_b.yaxis.grid(True, linestyle="-", alpha=0.2, linewidth=0.3)
     ax_b.set_axisbelow(True)
     ax_b.set_title("EU-27", fontsize=9, fontweight="bold", pad=8)
@@ -533,6 +538,7 @@ def create_figure(df, ff55_pct, ff55_mt):
     # =====================================================================
     # Panel (c): Country-level Mt CO2 — symlog y, countries on x
     # =====================================================================
+
     n_c = len(countries)
     x_c = np.arange(n_c)
 
@@ -545,19 +551,11 @@ def create_figure(df, ff55_pct, ff55_mt):
         col = f"{key}_mt"
         if col in countries.columns:
             y_all.extend(countries[col].dropna().tolist())
-    if y_all:
-        y_lo = min(y_all) * 1.2
-        y_hi = max(max(y_all) * 1.2, 5)
-    else:
-        y_lo, y_hi = -200, 50
-
+    y_lo = min(y_all) * 1.2 if y_all else -200
+    y_hi = max(max(y_all) * 1.2, 5) if y_all else 50
     ax_c.axhspan(y_lo * 2, 0, color="#eafaf1", alpha=0.6, zorder=0)
     ax_c.axhspan(0, y_hi * 2, color="#fdedec", alpha=0.6, zorder=0)
-
-    # Zero line
     ax_c.axhline(0, color="#2c3e50", linewidth=1.0, zorder=2)
-
-    # Stems for MC
     for i, (_, row) in enumerate(countries.iterrows()):
         mc_v = row.get("mc_mt", np.nan)
         if pd.notna(mc_v):
@@ -596,7 +594,7 @@ def create_figure(df, ff55_pct, ff55_mt):
         ha="right",
         fontsize=5.5,
     )
-    ax_c.set_ylabel("Change from 2023 (Mt CO2, symlog scale)")
+    ax_c.set_ylabel("Change from 2024 (Mt CO2, symlog scale)")
     ax_c.set_xlim(-0.8, n_c - 0.2)
     ax_c.set_ylim(y_lo, y_hi)
     ax_c.yaxis.grid(True, linestyle="-", alpha=0.2, linewidth=0.3)
@@ -612,35 +610,28 @@ def create_figure(df, ff55_pct, ff55_mt):
         ha="left",
     )
 
-    # Spines for all panels
     for ax in [ax_a, ax_b, ax_c]:
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.spines["left"].set_linewidth(0.5)
         ax.spines["bottom"].set_linewidth(0.5)
 
-    # =====================================================================
-    # Shared legend — right side of figure
-    # =====================================================================
     from matplotlib.lines import Line2D
 
-    handles = []
-    for key in src_keys:
-        s = SOURCES[key]
-        handles.append(
-            Line2D(
-                [0],
-                [0],
-                marker=s["marker"],
-                color="w",
-                markerfacecolor=s["color"],
-                markersize=6,
-                markeredgecolor="white",
-                markeredgewidth=0.3,
-                label=s["label"],
-            )
+    handles = [
+        Line2D(
+            [0],
+            [0],
+            marker=SOURCES[k]["marker"],
+            color="w",
+            markerfacecolor=SOURCES[k]["color"],
+            markersize=6,
+            markeredgecolor="white",
+            markeredgewidth=0.3,
+            label=SOURCES[k]["label"],
         )
-    # FF55 dashed line entry
+        for k in src_keys
+    ]
     handles.append(
         Line2D(
             [0],
@@ -651,7 +642,6 @@ def create_figure(df, ff55_pct, ff55_mt):
             label="FF55 target (EU-27)",
         )
     )
-
     fig.legend(
         handles=handles,
         loc="center right",
@@ -665,7 +655,6 @@ def create_figure(df, ff55_pct, ff55_mt):
         borderpad=0.6,
     ).get_frame().set_linewidth(0.4)
 
-    # Save
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     for fmt in ["png", "pdf", "svg"]:
         fig.savefig(
@@ -685,13 +674,13 @@ def create_figure(df, ff55_pct, ff55_mt):
 
 def main():
     print("=" * 70)
-    print("GENERATING FIGURE 1: EMISSION CHANGE FROM 2023")
+    print("GENERATING FIGURE 1: EMISSION CHANGE FROM 2024")
     print("=" * 70)
 
     dataset = load_dataset(DATASET_PATH)
     population_df = load_population_data()
 
-    baseline_mt = get_2023_baseline_mt(dataset, population_df)
+    baseline_mt = get_2024_baseline_mt(dataset, population_df)
     mc_2030_mt = get_2030_mc_mt(dataset, population_df)
     oecd_2030 = load_oecd_2030_mt()
     eea_2030 = load_eea_2030_mt()
@@ -706,28 +695,24 @@ def main():
     ff55_pct = ((ff55_mt_abs - eu_base) / eu_base) * 100
     ff55_mt = ff55_mt_abs - eu_base
 
-    print(f"EU27 2023: {eu_base:.1f} Mt | 1990: {eu_1990_mt:.1f} Mt")
+    print(f"EU27 2024: {eu_base:.1f} Mt | 1990: {eu_1990_mt:.1f} Mt")
     print(
-        f"FF55 target: {ff55_mt_abs:.1f} Mt -> {ff55_pct:+.1f}% / {ff55_mt:+.1f} Mt vs 2023"
+        f"FF55 target: {ff55_mt_abs:.1f} Mt -> {ff55_pct:+.1f}% / {ff55_mt:+.1f} Mt vs 2024"
     )
 
-    # Build table
     df = build_comparison(baseline_mt, mc_2030_mt, oecd_2030, eea_2030, pypsa_2030)
 
-    # Create figure
     print("\nCreating figure...")
     create_figure(df, ff55_pct, ff55_mt)
 
-    # Export
     TABLE_DIR.mkdir(parents=True, exist_ok=True)
     df["country_name"] = df["geo"].map(COUNTRY_NAMES)
-    df.to_csv(TABLE_DIR / "fig1_change_from_2023_summary.csv", index=False)
+    df.to_csv(TABLE_DIR / "fig1_change_from_2024_summary.csv", index=False)
 
-    # Summary
     print(f"\n{'=' * 60}")
-    print("SUMMARY (This study, 2023 -> 2030)")
+    print("SUMMARY (This study, 2024 -> 2030)")
     print(f"{'=' * 60}")
-    print(f"  {'Country':<15s} {'%':>8s} {'Mt CO2':>10s}  {'2023':>8s}  {'2030':>8s}")
+    print(f"  {'Country':<15s} {'%':>8s} {'Mt CO2':>10s}  {'2024':>8s}  {'2030':>8s}")
     print("  " + "-" * 52)
     for _, row in df.sort_values("mc_mt").iterrows():
         if pd.isna(row["mc_pct"]):
