@@ -638,6 +638,36 @@ def main():
             f"{eu_v:>+7.0f}%  {cd.mean():>+7.0f}%  {cd.min():>+7.0f}%  {cd.max():>+7.0f}%"
         )
 
+
+    # ── Numbers for paper Section: "Uneven progress" (heatmap paragraph) ──
+    print("\n" + "=" * 60)
+    print("NUMBERS FOR PAPER — Section: Sectoral heatmap paragraph")
+    print("=" * 60)
+
+    country_data = changes_df[changes_df["geo"].isin(EU27_COUNTRIES)]
+
+    # Power sector: how many countries exceed various reduction thresholds
+    power = country_data[country_data["sector"] == "Power"]["pct_change"]
+    for thresh in [-30, -40, -50]:
+        n = (power < thresh).sum()
+        print(f"  Power: countries with >{abs(thresh)}% reduction: {n}")
+
+    # Mobility: how many show projected increases
+    mob = country_data[country_data["sector"] == "Mobility"]["pct_change"]
+    n_mob_increase = (mob > 0).sum()
+    print(f"\n  Mobility: countries with projected INCREASE: {n_mob_increase}")
+
+    # Heating & Cooling: range
+    hc = country_data[country_data["sector"] == "HeatingCooling"]["pct_change"]
+    print(f"\n  Heating & Cooling % change range: {hc.min():+.1f}% to {hc.max():+.1f}%")
+
+    # Overall EU27 row
+    eu27_data = changes_df[changes_df["geo"] == "EU27"]
+    print("\n  EU27 sector % changes (2024→2030):")
+    for s in OUTPUT_SECTORS:
+        row = eu27_data[eu27_data["sector"] == s]
+        if not row.empty:
+            print(f"    {s:<16s}: {row['pct_change'].values[0]:+.1f}%")
     print("\nDone!")
 
 

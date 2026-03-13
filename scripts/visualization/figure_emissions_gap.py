@@ -723,6 +723,55 @@ def main():
         print(
             f"  {name:<15s} {row['mc_pct']:>+7.1f}% {row['mc_mt']:>+9.1f}  {base:>7.1f}  {proj:>7.1f}"
         )
+
+    # ── Numbers for paper Section: "Falling short of targets" ──────────────
+    eu_row = df[df["geo"] == "EU27"].iloc[0]
+    eu_2024 = baseline_mt["EU27"]
+    eu_2030 = eu_2024 + eu_row["mc_mt"]
+    gap_pct = eu_row["mc_pct"] - ff55_pct  # how many pp above FF55
+    gap_mt = eu_row["mc_mt"] - ff55_mt  # Mt gap vs FF55
+
+    print("\n" + "=" * 60)
+    print("NUMBERS FOR PAPER — Section: Falling short of targets")
+    print("=" * 60)
+    print(f"  EU27 2024 emissions       : {eu_2024:.1f} Mt CO2")
+    print(f"  EU27 2030 projected (mean): {eu_2030:.1f} Mt CO2")
+    print(f"  Projected % change 2024→30: {eu_row['mc_pct']:+.1f}%")
+    print(f"  FF55 target (Mt, absolute): {ff55_mt_abs:.1f} Mt CO2")
+    print(f"  FF55 required % vs 2024   : {ff55_pct:+.1f}%")
+    print(f"  Gap vs FF55 (pp)          : {gap_pct:+.1f} pp")
+    print(f"  Gap vs FF55 (Mt)          : {gap_mt:+.1f} Mt CO2")
+
+    # Comparison with other sources (EU27 only)
+    oecd_bau_pct = eu_row.get("oecd_bau1_pct", float("nan"))
+    eea_wam_pct = eu_row.get("eea_wam_pct", float("nan"))
+    print(f"\n  OECD BAU % gap vs FF55    : {oecd_bau_pct - ff55_pct:+.1f} pp  (OECD BAU: {oecd_bau_pct:+.1f}%)")
+    print(f"  EEA WAM % gap vs FF55     : {eea_wam_pct - ff55_pct:+.1f} pp  (EEA WAM:  {eea_wam_pct:+.1f}%)")
+
+    # Country-level distribution (panel c)
+    countries_only = df[df["geo"] != "EU27"].dropna(subset=["mc_pct"])
+    # Propose a few candidate thresholds for "exceeding X% reduction"
+    for thresh in [-10, -15, -20]:
+        n = (countries_only["mc_pct"] < thresh).sum()
+        print(f"\n  Countries with projected reduction > {abs(thresh)}%: {n}")
+    n_increase = (countries_only["mc_pct"] > 0).sum()
+    n_stagnant = ((countries_only["mc_pct"] >= -5) & (countries_only["mc_pct"] <= 0)).sum()
+    print(f"  Countries with near-stagnation or increase (>-5%): {n_increase + n_stagnant}")
+
+    # Big-5 share and collective change
+    big5 = ["DE", "FR", "IT", "PL", "ES"]
+    big5_2024 = sum(baseline_mt.get(c, 0) for c in big5)
+    big5_2030 = sum(baseline_mt.get(c, 0) + df[df["geo"] == c]["mc_mt"].values[0]
+                    for c in big5 if not df[df["geo"] == c].empty)
+    big5_share_2030 = big5_2024 / eu_2024 * 100  # share of 2024 base; approx for 2030
+    big5_collective_pct = (big5_2030 - big5_2024) / big5_2024 * 100
+    print(f"\n  Big-5 share of EU27 2024 emissions: {big5_share_2030:.1f}%")
+    print(f"  Big-5 collective % change 2024→30 : {big5_collective_pct:+.1f}%")
+    for c in big5:
+        row = df[df["geo"] == c]
+        if not row.empty:
+            print(f"    {c}: {row['mc_pct'].values[0]:+.1f}%")
+
     print("\nDone!")
 
 

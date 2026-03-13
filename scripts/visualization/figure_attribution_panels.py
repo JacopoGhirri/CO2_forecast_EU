@@ -614,6 +614,51 @@ def main():
             f"IQR=[{vals.quantile(0.25):.3f}, {vals.quantile(0.75):.3f}]  "
             f"90%=[{vals.quantile(0.05):.3f}, {vals.quantile(0.95):.3f}]"
         )
+
+
+    # ── Numbers for paper Section: "Uneven progress" ───────────────────────
+    print("\n" + "=" * 60)
+    print("NUMBERS FOR PAPER — Section: Uneven progress")
+    print("=" * 60)
+
+    eu27_hist = historical[historical["geo"].isin(EU27_COUNTRIES)]
+
+    # Aggregate EU27 totals by year
+    eu_year = eu27_hist.groupby("year")["total_CO2"].sum()
+    eu_2010 = eu_year.get(2010, float("nan"))
+    eu_2024 = eu_year.get(2024, float("nan"))
+    hist_pct = (eu_2024 - eu_2010) / eu_2010 * 100
+
+    # 2030 from MC
+    eu_mc_2030 = mc_country_df[["DE", "FR", "IT", "ES", "PL", "East Europe", "West Europe"]].sum(axis=1).mean() * 1e9
+    eu_2030_total = eu_mc_2030  # Gt → tonnes already (*1e9 above)
+    total_pct_from_2010 = (eu_mc_2030 - eu_2010) / eu_2010 * 100
+
+    print(f"  EU27 total CO2 2010: {eu_2010 / 1e9:.2f} Gt")
+    print(f"  EU27 total CO2 2024: {eu_2024 / 1e9:.2f} Gt")
+    print(f"  Historical reduction 2010→2024: {hist_pct:.1f}%")
+    print(f"  EU27 projected 2030: {eu_mc_2030 / 1e9:.2f} Gt")
+    print(f"  Total reduction 2010→2030: {total_pct_from_2010:.1f}%")
+
+    # Sector-level from mc_sector_df (Gt)
+    print("\n  Sector medians (Gt CO2, 2030):")
+    total_2030_gt = mc_sector_df[OUTPUT_SECTORS].median().sum()
+    for s in OUTPUT_SECTORS:
+        val = mc_sector_df[s].median()
+        share = val / total_2030_gt * 100
+        print(f"    {s:<16s}: {val:.3f} Gt  ({share:.1f}% of total)")
+
+    # Sector historical (2010) from stacked area data
+    hist_sector_2010 = eu27_hist[eu27_hist["year"] == 2010]
+    hist_sector_2024 = eu27_hist[eu27_hist["year"] == 2024]
+    print("\n  Sector % change 2010→2030 (vs 2010 historical total):")
+    for s in OUTPUT_SECTORS:
+        s_col = f"{s}_total"
+        if s_col in eu27_hist.columns:
+            v2010 = hist_sector_2010[s_col].sum()
+            v2030 = mc_sector_df[s].median() * 1e9
+            pct = (v2030 - v2010) / v2010 * 100 if v2010 > 0 else float("nan")
+            print(f"    {s:<16s}: 2010={v2010 / 1e9:.3f} Gt  2030≈{v2030 / 1e9:.3f} Gt  Δ={pct:+.1f}%")
     print("\nFigure 3 (revised) generation complete!")
 
 
