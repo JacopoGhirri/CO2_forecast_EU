@@ -9,6 +9,7 @@ reference when viewing the EU27 aggregate.
 Adapted to the publishable repository structure:
     - Dataset pickle: data/pytorch_datasets/unified_dataset.pkl --CPU version--
     - MC projections:  data/projections/mc_projections.csv
+    - Calibrated:      data/calibration/calibrated_projections.csv
     - Population:      data/full_timeseries/population.csv
                        data/full_timeseries/projections/population.csv
     - OECD:            data/external/oecd_projections.csv
@@ -20,9 +21,6 @@ contain real emission data (identical across MC samples), while years
 2025-2030 are model forecasts. The training dataset only covers up to
 2023, so the 2024 baseline for visualisation is extracted from the MC
 file rather than from the dataset pickle.
-
-Usage:
-    streamlit run scripts/visualization/interactive_plot.py
 """
 
 import os
@@ -46,6 +44,7 @@ GDRIVE_FILES = {
     "data/external/oecd_projections.csv": "13m0bZLjSF85LXt8mwgnjVu1LK1JjdIsU",
     "data/external/eea_projections.xlsx": "17lqxJ1HKn7gX8kv8ndkl_O3iiOo8-noW",
     "data/external/pypsa_projections.csv": "1YTQwdaxZtUgKRY-59vpC4dmD9OmYLRa4",
+    "data/calibration/calibrated_projections.csv": "1Xr1klzZ5yPM5eGd_7573G0npVhjJE_Zc",
 }
 
 
@@ -58,11 +57,12 @@ def download_data_if_needed():
     for filepath, file_id in GDRIVE_FILES.items():
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         if not os.path.exists(filepath):
+            if file_id == "##GDRIVE_ID##":
+                errors.append(f"{filepath} (GDrive ID not yet configured)")
+                continue
             try:
                 result = gdown.download(
-                    f"https://drive.google.com/uc?id={file_id}",
-                    filepath,
-                    quiet=True,
+                    f"https://drive.google.com/uc?id={file_id}", filepath, quiet=True
                 )
                 if result is None:
                     errors.append(filepath)
@@ -70,12 +70,10 @@ def download_data_if_needed():
                     downloaded.append(filepath)
             except Exception as e:
                 errors.append(f"{filepath}: {e}")
-
     return downloaded, errors
 
 
 downloaded, errors = download_data_if_needed()
-
 if errors:
     for err in errors:
         st.error(f"Failed to download: {err}")
@@ -90,6 +88,7 @@ if downloaded:
 
 DATASET_PATH = "data/pytorch_datasets/unified_dataset.pkl"
 MC_PROJECTIONS_PATH = "data/projections/mc_projections.csv"
+CALIBRATED_PATH = "data/calibration/calibrated_projections.csv"
 POPULATION_HIST_PATH = "data/full_timeseries/population.csv"
 POPULATION_PROJ_PATH = "data/full_timeseries/projections/population.csv"
 OECD_PATH = "data/external/oecd_projections.csv"
@@ -97,9 +96,7 @@ EEA_PATH = "data/external/eea_projections.xlsx"
 PYPSA_PATH = "data/external/pypsa_projections.csv"
 
 OUTPUT_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Power"]
-
 BASELINE_YEAR = 2024
-
 PYPSA_COUNTRY_MAPPING = {"GR": "EL"}
 
 EU27 = [
@@ -197,49 +194,42 @@ ISO3_TO_ISO2 = {
 SCENARIOS = {
     "OECD_BAU": {
         "name": "OECD Business as Usual",
-        "short": "OECD BAU",
         "marker": "o",
         "color": "#c0392b",
         "size": 120,
     },
     "OECD_ET": {
         "name": "OECD Energy Transition",
-        "short": "OECD ET",
         "marker": "^",
         "color": "#27ae60",
         "size": 120,
     },
     "EEA_WEM": {
         "name": "EEA With Existing Measures",
-        "short": "EEA WEM",
         "marker": "s",
         "color": "#8e44ad",
         "size": 100,
     },
     "EEA_WAM": {
         "name": "EEA With Additional Measures",
-        "short": "EEA WAM",
         "marker": "D",
         "color": "#2980b9",
         "size": 100,
     },
     "PYPSA_BASE": {
         "name": "PyPSA Baseline",
-        "short": "PyPSA Base",
         "marker": "p",
         "color": "#DDCC77",
         "size": 120,
     },
     "PYPSA_FF55": {
         "name": "PyPSA Fit for 55",
-        "short": "PyPSA FF55",
         "marker": "h",
         "color": "#88CCEE",
         "size": 120,
     },
     "TARGET": {
         "name": "FF55 Target (EU-27)",
-        "short": "Target",
         "marker": "*",
         "color": "#2c3e50",
         "size": 200,
@@ -272,6 +262,67 @@ plt.rcParams.update(
         "axes.facecolor": "white",
     }
 )
+
+
+# =============================================================================
+# Calibrated CI helpers
+# =============================================================================
+
+
+@st.cache_data
+def load_calibrated_ci() -> pd.DataFrame | None:
+    if not os.path.exists(CALIBRATED_PATH):
+        return None
+    df = pd.read_csv(CALIBRATED_PATH)
+    return df[["geo", "year", "sector", "median_cal", "p05_cal", "p95_cal"]]
+
+
+def _sum_calibrated_sectors(
+    cal_df: pd.DataFrame,
+    geos: list[str],
+    years: list[int],
+    population_df: pd.DataFrame,
+    metric: str,
+) -> tuple[pd.Series, pd.Series] | tuple[None, None]:
+    """
+    Sum calibrated p05_cal / p95_cal across all sectors for the given
+    countries and years.  Sector uncertainties are combined by summing
+    the calibrated endpoints (conservative positive-correlation assumption).
+    Converts to per-capita if requested.
+    """
+    subset = cal_df[cal_df["geo"].isin(geos)]
+    if subset.empty:
+        return None, None
+
+    lo_by_year, hi_by_year = {}, {}
+    for year in years:
+        yr = subset[subset["year"] == year]
+        if yr.empty:
+            continue
+        lo_by_year[year] = yr["p05_cal"].sum()
+        hi_by_year[year] = yr["p95_cal"].sum()
+
+    if not lo_by_year:
+        return None, None
+
+    lo = pd.Series(lo_by_year)
+    hi = pd.Series(hi_by_year)
+
+    if metric == "Per Capita Emissions":
+        if len(geos) == 1:
+            pop = population_df[population_df["geo"] == geos[0]].set_index("year")[
+                "population"
+            ]
+        else:
+            pop = (
+                population_df[population_df["geo"].isin(geos)]
+                .groupby("year")["population"]
+                .sum()
+            )
+        lo = lo / pop.reindex(lo.index)
+        hi = hi / pop.reindex(hi.index)
+
+    return lo, hi
 
 
 # =============================================================================
@@ -321,9 +372,9 @@ def load_and_process_data():
     )
     historical = pd.concat([keys, emi_dataset], axis=1)
     for s in OUTPUT_SECTORS:
-        mean_ = full_dataset.precomputed_scaling_params[s]["mean"]
-        std_ = full_dataset.precomputed_scaling_params[s]["std"]
-        historical[s] = historical[s] * std_ + mean_
+        m = full_dataset.precomputed_scaling_params[s]["mean"]
+        sd = full_dataset.precomputed_scaling_params[s]["std"]
+        historical[s] = historical[s] * sd + m
 
     pop_hist = pd.read_csv(POPULATION_HIST_PATH)
     pop_proj = pd.read_csv(POPULATION_PROJ_PATH)
@@ -339,27 +390,27 @@ def load_and_process_data():
         historical[OUTPUT_SECTORS].sum(axis=1) * historical["population"]
     )
 
+    # ── MC projections — mean only, no raw quantile columns ───────────────
     df_mc = pd.read_csv(MC_PROJECTIONS_PATH)
     df_mc["geo"] = df_mc["geo"].astype(str)
-
     for s in OUTPUT_SECTORS:
         m = full_dataset.precomputed_scaling_params[s]["mean"]
         sd = full_dataset.precomputed_scaling_params[s]["std"]
         df_mc[f"{s}_unnorm"] = np.clip(df_mc[f"emissions_{s}"] * sd + m, 0, None)
-
     df_mc = df_mc.merge(population_df, on=["geo", "year"], how="left")
     df_mc["total_CO2"] = (
         df_mc[[f"{s}_unnorm" for s in OUTPUT_SECTORS]].sum(axis=1) * df_mc["population"]
     )
 
-    # Append 2024 anchor to historical
-    mc_2024 = df_mc[df_mc["year"] == BASELINE_YEAR].copy()
-    anchor_2024 = mc_2024.groupby("geo", as_index=False).agg(
-        {
-            "population": "first",
-            "total_CO2": "mean",
-            **{f"{s}_unnorm": "mean" for s in OUTPUT_SECTORS},
-        }
+    # 2024 anchor — identical across MC samples, append to historical
+    anchor_2024 = (
+        df_mc[df_mc["year"] == BASELINE_YEAR]
+        .groupby("geo", as_index=False)
+        .agg(
+            population=("population", "first"),
+            total_CO2=("total_CO2", "mean"),
+            **{f"{s}_unnorm": (f"{s}_unnorm", "mean") for s in OUTPUT_SECTORS},
+        )
     )
     anchor_2024["year"] = BASELINE_YEAR
     for s in OUTPUT_SECTORS:
@@ -369,44 +420,22 @@ def load_and_process_data():
     ]
     historical = pd.concat([historical, anchor_2024], ignore_index=True)
 
-    # Forecast: 2025-2030
-    df_mc_forecast = df_mc[df_mc["year"] > BASELINE_YEAR].copy()
+    # Forecast summary — MC mean only (CI comes from calibrated file)
     forecast_summary = (
-        df_mc_forecast.groupby(["geo", "year"])
+        df_mc[df_mc["year"] > BASELINE_YEAR]
+        .groupby(["geo", "year"])
         .agg(
-            {
-                "total_CO2": [
-                    "mean",
-                    lambda x: np.quantile(x, 0.05),
-                    lambda x: np.quantile(x, 0.95),
-                ],
-                "population": "mean",
-                **{
-                    f"{s}_unnorm": [
-                        "mean",
-                        lambda x: np.quantile(x, 0.05),
-                        lambda x: np.quantile(x, 0.95),
-                    ]
-                    for s in OUTPUT_SECTORS
-                },
-            }
+            total_CO2_mean=("total_CO2", "mean"),
+            population=("population", "mean"),
+            **{f"{s}_mean": (f"{s}_unnorm", "mean") for s in OUTPUT_SECTORS},
         )
         .reset_index()
     )
-    forecast_summary.columns = [
-        "geo",
-        "year",
-        "total_CO2_mean",
-        "total_CO2_low",
-        "total_CO2_high",
-        "population",
-    ] + [f"{s}_{stat}" for s in OUTPUT_SECTORS for stat in ["mean", "low", "high"]]
 
-    # OECD
+    # ── External scenarios ────────────────────────────────────────────────
     oecd_df = pd.DataFrame()
     if os.path.exists(OECD_PATH):
-        oecd_df = pd.read_csv(OECD_PATH)
-        oecd_df = oecd_df.rename(
+        oecd_df = pd.read_csv(OECD_PATH).rename(
             columns={
                 "REF_AREA": "iso3",
                 "SCENARIO": "scenario",
@@ -432,32 +461,25 @@ def load_and_process_data():
         eea_df["value_Mt"] = eea_df["Gapfilled"] / 1000
         eea_df = eea_df[["geo", "scenario", "value_Mt"]]
 
-        # PyPSA
-        pypsa_df = None
-        if os.path.exists(PYPSA_PATH):
-            pypsa_raw = pd.read_csv(PYPSA_PATH)
-            pypsa_raw["country"] = pypsa_raw["country"].replace(PYPSA_COUNTRY_MAPPING)
-            totals = pypsa_raw.groupby(["country", "scenario"], as_index=False)[
-                "value"
-            ].sum()
-            # Prefer pre-computed EU27 totals from PyPSA over summing countries
-            eu_rows = pypsa_raw[pypsa_raw["country"] == "EU27"]
-            if not eu_rows.empty:
-                eu_totals = eu_rows.groupby("scenario", as_index=False)["value"].sum()
-                eu_totals["country"] = "EU27"
-                totals = pd.concat(
-                    [
-                        totals[totals["country"] != "EU27"],
-                        eu_totals,
-                    ],
-                    ignore_index=True,
-                )
-            totals["value_Mt"] = totals["value"] / 1e6
-            pypsa_df = totals.rename(columns={"country": "geo"})[
-                ["geo", "scenario", "value_Mt"]
-            ]
+    pypsa_df = None
+    if os.path.exists(PYPSA_PATH):
+        pypsa_raw = pd.read_csv(PYPSA_PATH)
+        pypsa_raw["country"] = pypsa_raw["country"].replace(PYPSA_COUNTRY_MAPPING)
+        totals = pypsa_raw.groupby(["country", "scenario"], as_index=False)[
+            "value"
+        ].sum()
+        eu_rows = pypsa_raw[pypsa_raw["country"] == "EU27"]
+        if not eu_rows.empty:
+            eu_totals = eu_rows.groupby("scenario", as_index=False)["value"].sum()
+            eu_totals["country"] = "EU27"
+            totals = pd.concat(
+                [totals[totals["country"] != "EU27"], eu_totals], ignore_index=True
+            )
+        totals["value_Mt"] = totals["value"] / 1e6
+        pypsa_df = totals.rename(columns={"country": "geo"})[
+            ["geo", "scenario", "value_Mt"]
+        ]
 
-    # EU-27 FF55 target: 45% of 1990 emissions
     eu27_ff55_mt = np.nan
     if not oecd_df.empty:
         eu27_1990 = oecd_df[(oecd_df["year"] == 1990) & (oecd_df["geo"] == "EU27")]
@@ -481,51 +503,34 @@ def compute_eu_aggregates(historical, forecast_summary, population_df):
     eu_hist = historical[historical["geo"].isin(EU27)].copy()
     eu_fcast = forecast_summary[forecast_summary["geo"].isin(EU27)].copy()
 
-    def hist_year_agg(g):
+    def hist_agg(g):
         total_pop = g["population"].sum()
-        total_co2 = g["total_CO2"].sum()
-        sector_pc = {
-            s: (g[s] * g["population"]).sum() / total_pop if total_pop > 0 else 0.0
-            for s in OUTPUT_SECTORS
-        }
-        row = {"population": total_pop, "total_CO2": total_co2}
-        row.update(sector_pc)
-        return pd.Series(row)
-
-    hist_agg = (
-        eu_hist.groupby("year", as_index=False)
-        .apply(hist_year_agg)
-        .reset_index(drop=True)
-    )
-
-    def fcast_year_agg(g):
-        total_pop = g["population"].sum()
-        row = {
-            "population": total_pop,
-            "total_CO2_mean": g["total_CO2_mean"].sum(),
-            "total_CO2_low": g["total_CO2_low"].sum(),
-            "total_CO2_high": g["total_CO2_high"].sum(),
-        }
+        row = {"population": total_pop, "total_CO2": g["total_CO2"].sum()}
         for s in OUTPUT_SECTORS:
-            for stat in ["mean", "low", "high"]:
-                col = f"{s}_{stat}"
-                if col in g.columns:
-                    row[col] = (g[col] * g["population"]).sum() / total_pop
-                else:
-                    row[col] = 0.0
+            row[s] = (
+                (g[s] * g["population"]).sum() / total_pop if total_pop > 0 else 0.0
+            )
         return pd.Series(row)
 
-    fcast_agg = (
-        eu_fcast.groupby("year", as_index=False)
-        .apply(fcast_year_agg)
-        .reset_index(drop=True)
-    )
+    def fcast_agg(g):
+        total_pop = g["population"].sum()
+        row = {"population": total_pop, "total_CO2_mean": g["total_CO2_mean"].sum()}
+        for s in OUTPUT_SECTORS:
+            col = f"{s}_mean"
+            row[col] = (
+                (g[col] * g["population"]).sum() / total_pop
+                if col in g.columns
+                else 0.0
+            )
+        return pd.Series(row)
 
-    return hist_agg, fcast_agg
+    h = eu_hist.groupby("year", as_index=False).apply(hist_agg).reset_index(drop=True)
+    f = eu_fcast.groupby("year", as_index=False).apply(fcast_agg).reset_index(drop=True)
+    return h, f
 
 
 # =============================================================================
-# Streamlit app
+# App
 # =============================================================================
 
 st.set_page_config(layout="wide", page_title="EU CO\u2082 Emissions Explorer")
@@ -546,19 +551,27 @@ with st.spinner("Loading data..."):
         eu27_ff55_mt,
     ) = load_and_process_data()
 
+cal_df = load_calibrated_ci()
+calibration_available = cal_df is not None
+
+if not calibration_available:
+    st.warning(
+        "⚠️  Calibrated intervals not found. "
+        "Run `scripts/calibration/calibrate_uncertainty.py`, upload the output to GDrive, "
+        "and add the file ID to `GDRIVE_FILES`. **No CI band will be shown.**"
+    )
+
+# ── Sidebar ───────────────────────────────────────────────────────────────
 st.sidebar.header("\U0001f4ca Plot Settings")
 
-country_options_unsorted = [c for c in historical["geo"].unique() if c in EU27]
-country_options_sorted = sorted(
-    country_options_unsorted, key=lambda x: COUNTRY_NAMES.get(x, x)
+country_options = ["EU27"] + sorted(
+    [c for c in historical["geo"].unique() if c in EU27],
+    key=lambda x: COUNTRY_NAMES.get(x, x),
 )
-country_options = ["EU27"] + country_options_sorted
-country_display = {c: COUNTRY_NAMES.get(c, c) for c in country_options}
-
 selected_country = st.sidebar.selectbox(
     "Country/Region:",
     country_options,
-    format_func=lambda x: country_display[x],
+    format_func=lambda x: COUNTRY_NAMES.get(x, x),
 )
 metric_type = st.sidebar.radio("Metric:", ["Total Emissions", "Per Capita Emissions"])
 sector_option = st.sidebar.radio(
@@ -571,8 +584,9 @@ if sector_option == "Individual sector":
 st.sidebar.markdown("---")
 st.sidebar.subheader("Display Options")
 show_ci = st.sidebar.checkbox(
-    "Show latent space uncertainty (90% Monte Carlo confidence intervals)",
-    value=True,
+    "Show 90 % calibrated uncertainty band",
+    value=calibration_available,
+    disabled=not calibration_available,
 )
 show_oecd = st.sidebar.checkbox("Show OECD scenarios", value=True)
 show_eea = st.sidebar.checkbox("Show EEA scenarios", value=(eea_df is not None))
@@ -584,7 +598,7 @@ show_target = st.sidebar.checkbox(
 if selected_country in ["CY", "MT"] and show_oecd:
     st.sidebar.warning(f"OECD data not available for {COUNTRY_NAMES[selected_country]}")
 
-# Prepare country data
+# ── Prepare country data ──────────────────────────────────────────────────
 if selected_country == "EU27":
     hist_data, fcast_data = compute_eu_aggregates(
         historical, forecast_summary, population_df
@@ -604,88 +618,40 @@ else:
     )
     fcast_data = forecast_summary[forecast_summary["geo"] == selected_country].copy()
 
-# Compute emissions metric
+# ── Emissions metric for mean line ────────────────────────────────────────
 if sector_option == "All sectors combined":
     if metric_type == "Per Capita Emissions":
         hist_data["emissions"] = hist_data["total_CO2"] / hist_data["population"]
         fcast_data["emissions_mean"] = (
             fcast_data["total_CO2_mean"] / fcast_data["population"]
         )
-        if show_ci:
-            fcast_data["emissions_low"] = (
-                fcast_data["total_CO2_low"] / fcast_data["population"]
-            )
-            fcast_data["emissions_high"] = (
-                fcast_data["total_CO2_high"] / fcast_data["population"]
-            )
     else:
         hist_data["emissions"] = hist_data["total_CO2"]
         fcast_data["emissions_mean"] = fcast_data["total_CO2_mean"]
-        if show_ci:
-            fcast_data["emissions_low"] = fcast_data["total_CO2_low"]
-            fcast_data["emissions_high"] = fcast_data["total_CO2_high"]
 else:
     hist_data["emissions"] = hist_data[selected_sector] * hist_data["population"]
     fcast_data["emissions_mean"] = (
         fcast_data[f"{selected_sector}_mean"] * fcast_data["population"]
     )
     if metric_type == "Per Capita Emissions":
-        hist_data["emissions"] = hist_data["emissions"] / hist_data["population"]
-        fcast_data["emissions_mean"] = (
-            fcast_data["emissions_mean"] / fcast_data["population"]
-        )
-        if show_ci:
-            fcast_data["emissions_low"] = fcast_data[f"{selected_sector}_low"]
-            fcast_data["emissions_high"] = fcast_data[f"{selected_sector}_high"]
-    else:
-        if show_ci:
-            fcast_data["emissions_low"] = (
-                fcast_data[f"{selected_sector}_low"] * fcast_data["population"]
-            )
-            fcast_data["emissions_high"] = (
-                fcast_data[f"{selected_sector}_high"] * fcast_data["population"]
-            )
+        hist_data["emissions"] /= hist_data["population"]
+        fcast_data["emissions_mean"] /= fcast_data["population"]
 
-# Create figure
-fig, ax = plt.subplots(figsize=(12, 6))
+# ── Calibrated CI ─────────────────────────────────────────────────────────
+forecast_years = sorted(fcast_data["year"].unique().tolist())
+ci_lo, ci_hi = None, None
 
-if metric_type == "Total Emissions":
-    scale = 1e6
-    unit = "MtCO\u2082"
-else:
-    scale = 1000
-    unit = "tCO\u2082/capita"
-
-if not hist_data.empty and "emissions" in hist_data.columns:
-    ax.plot(
-        hist_data["year"],
-        hist_data["emissions"] / scale,
-        color=COLORS["historical"],
-        linewidth=2.5,
-        label="Historical",
-        zorder=4,
+if show_ci and calibration_available and sector_option == "All sectors combined":
+    geos = EU27 if selected_country == "EU27" else [selected_country]
+    ci_lo, ci_hi = _sum_calibrated_sectors(
+        cal_df, geos, forecast_years, population_df, metric_type
     )
 
-if not fcast_data.empty and "emissions_mean" in fcast_data.columns:
-    ax.plot(
-        fcast_data["year"],
-        fcast_data["emissions_mean"] / scale,
-        color=COLORS["mc_mean"],
-        linewidth=2.5,
-        label="This study (mean)",
-        zorder=4,
-    )
-    if show_ci and "emissions_low" in fcast_data.columns:
-        ax.fill_between(
-            fcast_data["year"],
-            fcast_data["emissions_low"] / scale,
-            fcast_data["emissions_high"] / scale,
-            color=COLORS["mc_ci"],
-            alpha=0.3,
-            label="MC CI",
-            zorder=2,
-        )
+# ── Scale and unit ────────────────────────────────────────────────────────
+scale = 1e6 if metric_type == "Total Emissions" else 1_000
+unit = "MtCO\u2082" if metric_type == "Total Emissions" else "tCO\u2082/capita"
 
+# ── Pop for 2030 scenario dots ────────────────────────────────────────────
 pop_2030 = None
 if metric_type == "Per Capita Emissions":
     if selected_country == "EU27" and eu_pop is not None:
@@ -696,6 +662,43 @@ if metric_type == "Per Capita Emissions":
             (population_df["geo"] == selected_country) & (population_df["year"] == 2030)
         ]
         pop_2030 = p["population"].iloc[0] if not p.empty else None
+
+# ── Figure ────────────────────────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(12, 6))
+
+# Historical
+if not hist_data.empty and "emissions" in hist_data.columns:
+    ax.plot(
+        hist_data["year"],
+        hist_data["emissions"] / scale,
+        color=COLORS["historical"],
+        linewidth=2.5,
+        label="Historical",
+        zorder=4,
+    )
+
+# MC mean
+if not fcast_data.empty and "emissions_mean" in fcast_data.columns:
+    ax.plot(
+        fcast_data["year"],
+        fcast_data["emissions_mean"] / scale,
+        color=COLORS["mc_mean"],
+        linewidth=2.5,
+        label="This study (mean)",
+        zorder=4,
+    )
+
+# Calibrated CI band
+if ci_lo is not None and ci_hi is not None:
+    ax.fill_between(
+        ci_lo.index,
+        ci_lo.values / scale,
+        ci_hi.values / scale,
+        color=COLORS["mc_ci"],
+        alpha=0.30,
+        label="90 % calibrated interval",
+        zorder=2,
+    )
 
 # OECD
 if (
@@ -786,7 +789,7 @@ if show_pypsa and pypsa_df is not None and sector_option == "All sectors combine
                 zorder=5,
             )
 
-# FF55 target — EU-27 only
+# FF55 target
 if (
     show_target
     and selected_country == "EU27"
@@ -807,14 +810,13 @@ if (
         s=cfg["size"],
         edgecolors="white",
         linewidths=1.5,
-        label="FF55 target (55% from 1990)",
+        label="FF55 target (55 % from 1990)",
         zorder=6,
     )
 
-country_name = COUNTRY_NAMES.get(selected_country, selected_country)
-sector_label = selected_sector if selected_sector else "All sectors"
 ax.set_title(
-    f"{country_name} \u2013 {metric_type} ({sector_label})",
+    f"{COUNTRY_NAMES.get(selected_country, selected_country)} \u2013 "
+    f"{metric_type} ({selected_sector if selected_sector else 'All sectors'})",
     fontsize=14,
     fontweight="bold",
 )
@@ -831,7 +833,7 @@ plt.tight_layout()
 
 st.pyplot(fig)
 
-# Info panel
+# ── Info panel ────────────────────────────────────────────────────────────
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -845,11 +847,15 @@ with col1:
         )
 
 with col2:
+    if calibration_available:
+        st.success("✅ Calibrated 90 % intervals active")
+    else:
+        st.error("❌ Calibrated intervals unavailable — add GDrive ID to GDRIVE_FILES")
     if selected_country == "EU27" and not np.isnan(eu27_ff55_mt):
         st.metric(
             "2030 FF55 Target",
             f"{eu27_ff55_mt:.0f} Mt",
-            help="55% reduction from 1990 CO\u2082 levels (EU-27 aggregate)",
+            help="55 % reduction from 1990 CO\u2082 (EU-27 aggregate)",
         )
 
 with col3:
@@ -857,35 +863,27 @@ with col3:
     has_eea = eea_df is not None and selected_country in eea_df["geo"].values
     has_pypsa = pypsa_df is not None and selected_country in pypsa_df["geo"].values
     st.markdown("**Data availability:**")
-    st.markdown(f"- OECD: {'yes' if has_oecd else 'no'}")
-    st.markdown(f"- EEA: {'yes' if has_eea else 'no'}")
-    st.markdown(f"- PyPSA: {'yes' if has_pypsa else 'no'}")
+    st.markdown(f"- OECD:  {'✅' if has_oecd else '❌'}")
+    st.markdown(f"- EEA:   {'✅' if has_eea else '❌'}")
+    st.markdown(f"- PyPSA: {'✅' if has_pypsa else '❌'}")
 
 with st.expander("\U0001f4cb View underlying data"):
     tab1, tab2 = st.tabs(["Historical", "Forecast"])
-
     with tab1:
         if "emissions" in hist_data.columns:
-            display_hist = hist_data[["year", "emissions"]].copy()
-            display_hist["emissions"] = display_hist["emissions"] / scale
-            display_hist = display_hist.rename(
-                columns={"emissions": f"Emissions ({unit})"}
+            display = hist_data[["year", "emissions"]].copy()
+            display["emissions"] = display["emissions"] / scale
+            st.dataframe(
+                display.rename(columns={"emissions": f"Emissions ({unit})"}).round(2)
             )
-            st.dataframe(display_hist.round(2))
-
     with tab2:
         if "emissions_mean" in fcast_data.columns:
-            cols = ["year", "emissions_mean"]
-            if "emissions_low" in fcast_data.columns:
-                cols.extend(["emissions_low", "emissions_high"])
-            display_fcast = fcast_data[cols].copy()
-            for c in cols[1:]:
-                display_fcast[c] = display_fcast[c] / scale
-            display_fcast = display_fcast.rename(
-                columns={
-                    "emissions_mean": f"Mean ({unit})",
-                    "emissions_low": f"MC 5th percentile ({unit})",
-                    "emissions_high": f"MC 95th percentile ({unit})",
-                }
-            )
-            st.dataframe(display_fcast.round(2))
+            display = fcast_data[["year", "emissions_mean"]].copy()
+            display["emissions_mean"] = display["emissions_mean"] / scale
+            display = display.rename(columns={"emissions_mean": f"Mean ({unit})"})
+            if ci_lo is not None:
+                display = display.set_index("year")
+                display[f"p05_cal ({unit})"] = (ci_lo / scale).round(2)
+                display[f"p95_cal ({unit})"] = (ci_hi / scale).round(2)
+                display = display.reset_index()
+            st.dataframe(display.round(2))
