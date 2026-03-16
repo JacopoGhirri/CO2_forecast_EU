@@ -44,7 +44,7 @@ GDRIVE_FILES = {
     "data/external/oecd_projections.csv": "13m0bZLjSF85LXt8mwgnjVu1LK1JjdIsU",
     "data/external/eea_projections.xlsx": "17lqxJ1HKn7gX8kv8ndkl_O3iiOo8-noW",
     "data/external/pypsa_projections.csv": "1YTQwdaxZtUgKRY-59vpC4dmD9OmYLRa4",
-    "data/calibration/calibration_temperatures.csv": "1n0tLaJFYnIYRkYC9FGFGFksCbG1Ex0Ri",
+    "data/calibration/interactive_ci.csv": "1za3qJDB9KoVz0IP-kRXdVHrPfLjugP-y",
 }
 
 
@@ -265,108 +265,75 @@ plt.rcParams.update(
 
 
 # =============================================================================
-# Calibrated CI helpers
+# Calibrated CI helpers  — purely reads the precomputed CSV
 # =============================================================================
 
-CALIBRATION_TEMPERATURES_PATH = "data/calibration/calibration_temperatures.csv"
+INTERACTIVE_CI_PATH = "data/calibration/interactive_ci.csv"
 
 
 @st.cache_data
-def load_calibration_temperatures() -> dict[tuple[str, str], float] | None:
-    """Load (geo, sector) -> T from calibration_temperatures.csv."""
-    if not os.path.exists(CALIBRATION_TEMPERATURES_PATH):
+def load_interactive_ci() -> pd.DataFrame | None:
+    """
+    Load the precomputed CI CSV produced by
+    scripts/visualization/precompute_interactive_ci.py
+
+    Columns present for every (geo, year):
+      mean_total_Mt, p05_cal_total_Mt, p95_cal_total_Mt
+      mean_total_tCO2_cap, p05_cal_total_tCO2_cap, p95_cal_total_tCO2_cap
+      <sector>_mean_Mt, <sector>_p05_cal_Mt, <sector>_p95_cal_Mt
+      <sector>_mean_tCO2_cap, <sector>_p05_cal_tCO2_cap, <sector>_p95_cal_tCO2_cap
+    """
+    if not os.path.exists(INTERACTIVE_CI_PATH):
         return None
-    df = pd.read_csv(CALIBRATION_TEMPERATURES_PATH)
-    return {(row["geo"], row["sector"]): float(row["T"]) for _, row in df.iterrows()}
+    return pd.read_csv(INTERACTIVE_CI_PATH)
 
 
-def _get_calibrated_ci(
-    df_mc: pd.DataFrame,
-    temperatures: dict[tuple[str, str], float],
+def _lookup_ci(
+    ci_df: pd.DataFrame,
     geos: list[str],
     years: list[int],
-    population_df: pd.DataFrame,
     metric: str,
+    sector: str | None,
 ) -> tuple[pd.Series, pd.Series] | tuple[None, None]:
     """
-    Compute calibrated CI by applying the same transformation as the boxplots:
+    Look up the precomputed CI for the given countries, years, metric and sector.
 
-        y_cal_sector = mean_sector + T_sector * (y_mc_sector - mean_sector)
+    For multi-country queries (EU27) the CSV already contains an "EU27" row
+    computed by summing across countries before taking quantiles.
+    For individual countries the row is looked up directly.
 
-    For each MC sample the calibrated sector values are summed and multiplied
-    by population to get total kg CO2, then the 5th/95th percentile is taken
-    across MC samples.  This is numerically identical to the boxplot whiskers.
+    metric: "Total Emissions"  → columns in Mt
+            "Per Capita Emissions" → columns in tCO2/cap
+    sector: None → all-sectors-combined total
+            str  → individual sector
     """
-    subset = df_mc[df_mc["geo"].isin(geos)].copy()
+    unit_suffix = "Mt" if metric == "Total Emissions" else "tCO2_cap"
+
+    if len(geos) > 1:
+        # EU27 aggregate — already precomputed as a single row
+        subset = ci_df[ci_df["geo"] == "EU27"]
+    else:
+        subset = ci_df[ci_df["geo"] == geos[0]]
+
     if subset.empty:
         return None, None
 
-    lo_by_year, hi_by_year = {}, {}
+    if sector is None:
+        lo_col = f"p05_cal_total_{unit_suffix}"
+        hi_col = f"p95_cal_total_{unit_suffix}"
+    else:
+        lo_col = f"{sector}_p05_cal_{unit_suffix}"
+        hi_col = f"{sector}_p95_cal_{unit_suffix}"
 
-    for year in years:
-        yr = subset[subset["year"] == year]
-        if yr.empty:
-            continue
-
-        # For each MC sample compute the calibrated total CO2 across all
-        # sectors and all requested countries — mirroring build_mc_2030_country
-        mc_totals = {}
-        for mc_id, mc_grp in yr.groupby("mc_sample"):
-            total = 0.0
-            for geo_id, geo_grp in mc_grp.groupby("geo"):
-                pop = geo_grp["population"].iloc[0]
-                if np.isnan(pop):
-                    continue
-                for sector in OUTPUT_SECTORS:
-                    col = f"{sector}_unnorm"
-                    if col not in geo_grp.columns:
-                        continue
-                    val = geo_grp[col].iloc[0]   # one row per (mc, geo, year)
-                    total += val * pop
-            mc_totals[mc_id] = total
-
-        if not mc_totals:
-            continue
-
-        # Apply T: rescale each MC sample's total around the mean
-        # We need to apply T per (geo, sector) then sum — compute per-geo-sector
-        # calibrated totals per MC sample
-        mc_cal_totals = {}
-        for mc_id, mc_grp in yr.groupby("mc_sample"):
-            total_cal = 0.0
-            for geo_id, geo_grp in mc_grp.groupby("geo"):
-                pop = geo_grp["population"].iloc[0]
-                if np.isnan(pop):
-                    continue
-                for sector in OUTPUT_SECTORS:
-                    col = f"{sector}_unnorm"
-                    if col not in geo_grp.columns:
-                        continue
-                    val = geo_grp[col].iloc[0]
-                    # Mean for this (geo, sector, year) across all MC samples
-                    mean_val = yr[yr["geo"] == geo_id][col].mean()
-                    T = temperatures.get((geo_id, sector), 1.0)
-                    val_cal = mean_val + T * (val - mean_val)
-                    total_cal += val_cal * pop
-            mc_cal_totals[mc_id] = total_cal
-
-        totals_arr = np.array(list(mc_cal_totals.values()))
-        lo_by_year[year] = np.percentile(totals_arr, 5)
-        hi_by_year[year] = np.percentile(totals_arr, 95)
-
-    if not lo_by_year:
+    if lo_col not in subset.columns:
         return None, None
 
-    lo = pd.Series(lo_by_year)
-    hi = pd.Series(hi_by_year)
+    subset = subset[subset["year"].isin(years)].set_index("year")
+    lo = subset[lo_col].reindex(years).dropna()
+    hi = subset[hi_col].reindex(years).dropna()
 
-    if metric == "Per Capita Emissions":
-        total_pop = (
-            population_df[population_df["geo"].isin(geos)]
-            .groupby("year")["population"].sum()
-        )
-        lo = lo / total_pop.reindex(lo.index)
-        hi = hi / total_pop.reindex(hi.index)
+    if lo.empty:
+        return None, None
 
     return lo, hi
 
@@ -540,7 +507,6 @@ def load_and_process_data():
         pypsa_df,
         population_df,
         eu27_ff55_mt,
-        df_mc,
     )
 
 
@@ -596,17 +562,17 @@ with st.spinner("Loading data..."):
         pypsa_df,
         population_df,
         eu27_ff55_mt,
-        df_mc_full,
     ) = load_and_process_data()
 
-cal_temperatures = load_calibration_temperatures()
-calibration_available = cal_temperatures is not None
+ci_df = load_interactive_ci()
+calibration_available = ci_df is not None
 
 if not calibration_available:
     st.warning(
-        "⚠️  Calibration temperatures not found. "
-        "Upload `calibration_temperatures.csv` to GDrive and add its ID to `GDRIVE_FILES`. "
-        "**No CI band will be shown.**"
+        "⚠️  Precomputed CI not found. "
+        "Run `scripts/visualization/precompute_interactive_ci.py`, upload "
+        "`data/calibration/interactive_ci.csv` to GDrive and add its ID to "
+        "`GDRIVE_FILES`. **No CI band will be shown.**"
     )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────
@@ -689,11 +655,10 @@ else:
 forecast_years = sorted(fcast_data["year"].unique().tolist())
 ci_lo, ci_hi = None, None
 
-if show_ci and calibration_available and sector_option == "All sectors combined":
+if show_ci and calibration_available:
     geos = EU27 if selected_country == "EU27" else [selected_country]
-    ci_lo, ci_hi = _get_calibrated_ci(
-        df_mc_full, cal_temperatures, geos, forecast_years, population_df, metric_type
-    )
+    sector_for_ci = selected_sector if sector_option == "Individual sector" else None
+    ci_lo, ci_hi = _lookup_ci(ci_df, geos, forecast_years, metric_type, sector_for_ci)
 
 # ── Scale and unit ────────────────────────────────────────────────────────
 scale = 1e6 if metric_type == "Total Emissions" else 1_000
@@ -736,12 +701,12 @@ if not fcast_data.empty and "emissions_mean" in fcast_data.columns:
         zorder=4,
     )
 
-# Calibrated CI band
+# Calibrated CI band — values already in Mt or tCO2/cap from precomputed CSV
 if ci_lo is not None and ci_hi is not None:
     ax.fill_between(
         ci_lo.index,
-        ci_lo.values / scale,
-        ci_hi.values / scale,
+        ci_lo.values,
+        ci_hi.values,
         color=COLORS["mc_ci"],
         alpha=0.30,
         label="90 % calibrated interval",
@@ -898,7 +863,7 @@ with col2:
     if calibration_available:
         st.success("✅ Calibrated 90 % intervals active")
     else:
-        st.error("❌ Calibrated intervals unavailable — add calibration_temperatures.csv GDrive ID")
+        st.error("❌ Precomputed CI unavailable — run precompute_interactive_ci.py")
     if selected_country == "EU27" and not np.isnan(eu27_ff55_mt):
         st.metric(
             "2030 FF55 Target",
@@ -931,7 +896,7 @@ with st.expander("\U0001f4cb View underlying data"):
             display = display.rename(columns={"emissions_mean": f"Mean ({unit})"})
             if ci_lo is not None:
                 display = display.set_index("year")
-                display[f"p05_cal ({unit})"] = (ci_lo / scale).round(2)
-                display[f"p95_cal ({unit})"] = (ci_hi / scale).round(2)
+                display[f"p05_cal ({unit})"] = ci_lo.round(2)
+                display[f"p95_cal ({unit})"] = ci_hi.round(2)
                 display = display.reset_index()
             st.dataframe(display.round(2))
