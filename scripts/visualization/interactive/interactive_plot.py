@@ -44,7 +44,7 @@ GDRIVE_FILES = {
     "data/external/oecd_projections.csv": "13m0bZLjSF85LXt8mwgnjVu1LK1JjdIsU",
     "data/external/eea_projections.xlsx": "17lqxJ1HKn7gX8kv8ndkl_O3iiOo8-noW",
     "data/external/pypsa_projections.csv": "1YTQwdaxZtUgKRY-59vpC4dmD9OmYLRa4",
-    "data/calibration/calibrated_projections.csv": "1Xr1klzZ5yPM5eGd_7573G0npVhjJE_Zc",
+    "data/calibration/calibration_temperatures.csv": "1n0tLaJFYnIYRkYC9FGFGFksCbG1Ex0Ri",
 }
 
 
@@ -268,44 +268,91 @@ plt.rcParams.update(
 # Calibrated CI helpers
 # =============================================================================
 
+CALIBRATION_TEMPERATURES_PATH = "data/calibration/calibration_temperatures.csv"
+
 
 @st.cache_data
-def load_calibrated_ci() -> pd.DataFrame | None:
-    if not os.path.exists(CALIBRATED_PATH):
+def load_calibration_temperatures() -> dict[tuple[str, str], float] | None:
+    """Load (geo, sector) -> T from calibration_temperatures.csv."""
+    if not os.path.exists(CALIBRATION_TEMPERATURES_PATH):
         return None
-    df = pd.read_csv(CALIBRATED_PATH)
-    # New schema: total_p05_cal / total_p95_cal are already in kg total
-    # (sectors summed, population multiplied) — ready to divide by 1e6 for Mt
-    return df[["geo", "year", "total_mean", "total_p05_cal", "total_p95_cal"]]
+    df = pd.read_csv(CALIBRATION_TEMPERATURES_PATH)
+    return {(row["geo"], row["sector"]): float(row["T"]) for _, row in df.iterrows()}
 
 
 def _get_calibrated_ci(
-    cal_df: pd.DataFrame,
+    df_mc: pd.DataFrame,
+    temperatures: dict[tuple[str, str], float],
     geos: list[str],
     years: list[int],
     population_df: pd.DataFrame,
     metric: str,
 ) -> tuple[pd.Series, pd.Series] | tuple[None, None]:
     """
-    Retrieve calibrated total-CO2 CI for the requested countries and years.
+    Compute calibrated CI by applying the same transformation as the boxplots:
 
-    The CSV already stores values in kg total (sectors summed × population),
-    computed by taking empirical quantiles of the T-rescaled MC samples —
-    identical to what the boxplot panels compute.  We just sum across
-    countries and optionally convert to per-capita.
+        y_cal_sector = mean_sector + T_sector * (y_mc_sector - mean_sector)
+
+    For each MC sample the calibrated sector values are summed and multiplied
+    by population to get total kg CO2, then the 5th/95th percentile is taken
+    across MC samples.  This is numerically identical to the boxplot whiskers.
     """
-    subset = cal_df[cal_df["geo"].isin(geos)]
+    subset = df_mc[df_mc["geo"].isin(geos)].copy()
     if subset.empty:
         return None, None
 
     lo_by_year, hi_by_year = {}, {}
+
     for year in years:
         yr = subset[subset["year"] == year]
         if yr.empty:
             continue
-        # Sum across countries (each row is one country, values already in kg total)
-        lo_by_year[year] = yr["total_p05_cal"].sum()
-        hi_by_year[year] = yr["total_p95_cal"].sum()
+
+        # For each MC sample compute the calibrated total CO2 across all
+        # sectors and all requested countries — mirroring build_mc_2030_country
+        mc_totals = {}
+        for mc_id, mc_grp in yr.groupby("mc_sample"):
+            total = 0.0
+            for geo_id, geo_grp in mc_grp.groupby("geo"):
+                pop = geo_grp["population"].iloc[0]
+                if np.isnan(pop):
+                    continue
+                for sector in OUTPUT_SECTORS:
+                    col = f"{sector}_unnorm"
+                    if col not in geo_grp.columns:
+                        continue
+                    val = geo_grp[col].iloc[0]   # one row per (mc, geo, year)
+                    total += val * pop
+            mc_totals[mc_id] = total
+
+        if not mc_totals:
+            continue
+
+        # Apply T: rescale each MC sample's total around the mean
+        # We need to apply T per (geo, sector) then sum — compute per-geo-sector
+        # calibrated totals per MC sample
+        mc_cal_totals = {}
+        for mc_id, mc_grp in yr.groupby("mc_sample"):
+            total_cal = 0.0
+            for geo_id, geo_grp in mc_grp.groupby("geo"):
+                pop = geo_grp["population"].iloc[0]
+                if np.isnan(pop):
+                    continue
+                for sector in OUTPUT_SECTORS:
+                    col = f"{sector}_unnorm"
+                    if col not in geo_grp.columns:
+                        continue
+                    val = geo_grp[col].iloc[0]
+                    # Mean for this (geo, sector, year) across all MC samples
+                    mean_val = yr[yr["geo"] == geo_id][col].mean()
+                    T = temperatures.get((geo_id, sector), 1.0)
+                    val_cal = mean_val + T * (val - mean_val)
+                    total_cal += val_cal * pop
+            mc_cal_totals[mc_id] = total_cal
+
+        totals_arr = np.array(list(mc_cal_totals.values()))
+        lo_by_year[year] = np.percentile(totals_arr, 5)
+        hi_by_year[year] = np.percentile(totals_arr, 95)
 
     if not lo_by_year:
         return None, None
@@ -493,6 +540,7 @@ def load_and_process_data():
         pypsa_df,
         population_df,
         eu27_ff55_mt,
+        df_mc,
     )
 
 
@@ -548,16 +596,17 @@ with st.spinner("Loading data..."):
         pypsa_df,
         population_df,
         eu27_ff55_mt,
+        df_mc_full,
     ) = load_and_process_data()
 
-cal_df = load_calibrated_ci()
-calibration_available = cal_df is not None
+cal_temperatures = load_calibration_temperatures()
+calibration_available = cal_temperatures is not None
 
 if not calibration_available:
     st.warning(
-        "⚠️  Calibrated intervals not found. "
-        "Run `scripts/calibration/calibrate_uncertainty.py`, upload the output to GDrive, "
-        "and add the file ID to `GDRIVE_FILES`. **No CI band will be shown.**"
+        "⚠️  Calibration temperatures not found. "
+        "Upload `calibration_temperatures.csv` to GDrive and add its ID to `GDRIVE_FILES`. "
+        "**No CI band will be shown.**"
     )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────
@@ -643,7 +692,7 @@ ci_lo, ci_hi = None, None
 if show_ci and calibration_available and sector_option == "All sectors combined":
     geos = EU27 if selected_country == "EU27" else [selected_country]
     ci_lo, ci_hi = _get_calibrated_ci(
-        cal_df, geos, forecast_years, population_df, metric_type
+        df_mc_full, cal_temperatures, geos, forecast_years, population_df, metric_type
     )
 
 # ── Scale and unit ────────────────────────────────────────────────────────
@@ -849,7 +898,7 @@ with col2:
     if calibration_available:
         st.success("✅ Calibrated 90 % intervals active")
     else:
-        st.error("❌ Calibrated intervals unavailable — add GDrive ID to GDRIVE_FILES")
+        st.error("❌ Calibrated intervals unavailable — add calibration_temperatures.csv GDrive ID")
     if selected_country == "EU27" and not np.isnan(eu27_ff55_mt):
         st.metric(
             "2030 FF55 Target",
