@@ -274,10 +274,12 @@ def load_calibrated_ci() -> pd.DataFrame | None:
     if not os.path.exists(CALIBRATED_PATH):
         return None
     df = pd.read_csv(CALIBRATED_PATH)
-    return df[["geo", "year", "sector", "median_cal", "p05_cal", "p95_cal"]]
+    # New schema: total_p05_cal / total_p95_cal are already in kg total
+    # (sectors summed, population multiplied) — ready to divide by 1e6 for Mt
+    return df[["geo", "year", "total_mean", "total_p05_cal", "total_p95_cal"]]
 
 
-def _sum_calibrated_sectors(
+def _get_calibrated_ci(
     cal_df: pd.DataFrame,
     geos: list[str],
     years: list[int],
@@ -285,40 +287,25 @@ def _sum_calibrated_sectors(
     metric: str,
 ) -> tuple[pd.Series, pd.Series] | tuple[None, None]:
     """
-    Sum calibrated p05_cal / p95_cal across all sectors for the given
-    countries and years.  Sector uncertainties are combined by summing
-    the calibrated endpoints (conservative positive-correlation assumption).
-    Converts to per-capita if requested.
+    Retrieve calibrated total-CO2 CI for the requested countries and years.
+
+    The CSV already stores values in kg total (sectors summed × population),
+    computed by taking empirical quantiles of the T-rescaled MC samples —
+    identical to what the boxplot panels compute.  We just sum across
+    countries and optionally convert to per-capita.
     """
     subset = cal_df[cal_df["geo"].isin(geos)]
     if subset.empty:
         return None, None
 
-    # Build a per-geo population lookup
-    pop_lookup = (
-        population_df[population_df["geo"].isin(geos)]
-        .set_index(["geo", "year"])["population"]
-    )
-
     lo_by_year, hi_by_year = {}, {}
     for year in years:
-        yr = subset[subset["year"] == year].copy()
+        yr = subset[subset["year"] == year]
         if yr.empty:
             continue
-
-        # Multiply each (geo, sector) calibrated value by that geo's population
-        # to get kg total, then sum across sectors and countries
-        total_lo, total_hi = 0.0, 0.0
-        for geo in yr["geo"].unique():
-            pop = pop_lookup.get((geo, year), np.nan)
-            if np.isnan(pop):
-                continue
-            geo_rows = yr[yr["geo"] == geo]
-            total_lo += geo_rows["p05_cal"].sum() * pop
-            total_hi += geo_rows["p95_cal"].sum() * pop
-
-        lo_by_year[year] = total_lo
-        hi_by_year[year] = total_hi
+        # Sum across countries (each row is one country, values already in kg total)
+        lo_by_year[year] = yr["total_p05_cal"].sum()
+        hi_by_year[year] = yr["total_p95_cal"].sum()
 
     if not lo_by_year:
         return None, None
@@ -326,7 +313,6 @@ def _sum_calibrated_sectors(
     lo = pd.Series(lo_by_year)
     hi = pd.Series(hi_by_year)
 
-    # For per-capita: divide total kg by total population to get kg/hab
     if metric == "Per Capita Emissions":
         total_pop = (
             population_df[population_df["geo"].isin(geos)]
@@ -656,7 +642,7 @@ ci_lo, ci_hi = None, None
 
 if show_ci and calibration_available and sector_option == "All sectors combined":
     geos = EU27 if selected_country == "EU27" else [selected_country]
-    ci_lo, ci_hi = _sum_calibrated_sectors(
+    ci_lo, ci_hi = _get_calibrated_ci(
         cal_df, geos, forecast_years, population_df, metric_type
     )
 
