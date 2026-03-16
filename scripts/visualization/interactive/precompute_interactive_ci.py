@@ -302,6 +302,20 @@ def main():
     print("[2/5] Loading calibration temperatures...")
     temperatures = load_temperatures()
     print(f"      {len(temperatures)} (geo, sector) scalars loaded.")
+    if temperatures:
+        T_values = list(temperatures.values())
+        print(
+            f"      T range: {min(T_values):.4f} – {max(T_values):.4f}  "
+            f"median: {np.median(T_values):.4f}"
+        )
+        # Sample a few keys to verify format
+        sample_keys = list(temperatures.keys())[:3]
+        print(f"      Sample keys: {sample_keys}")
+        # Check DE/Mobility specifically
+        de_mob = temperatures.get(("DE", "Mobility"), "NOT FOUND")
+        print(f"      T for (DE, Mobility): {de_mob}")
+    else:
+        print("      WARNING: no temperatures loaded — T=1.0 fallback for all cells")
 
     print("[3/5] Loading population...")
     population_df = load_population()
