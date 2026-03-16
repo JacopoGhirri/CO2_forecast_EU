@@ -294,13 +294,31 @@ def _sum_calibrated_sectors(
     if subset.empty:
         return None, None
 
+    # Build a per-geo population lookup
+    pop_lookup = (
+        population_df[population_df["geo"].isin(geos)]
+        .set_index(["geo", "year"])["population"]
+    )
+
     lo_by_year, hi_by_year = {}, {}
     for year in years:
-        yr = subset[subset["year"] == year]
+        yr = subset[subset["year"] == year].copy()
         if yr.empty:
             continue
-        lo_by_year[year] = yr["p05_cal"].sum()
-        hi_by_year[year] = yr["p95_cal"].sum()
+
+        # Multiply each (geo, sector) calibrated value by that geo's population
+        # to get kg total, then sum across sectors and countries
+        total_lo, total_hi = 0.0, 0.0
+        for geo in yr["geo"].unique():
+            pop = pop_lookup.get((geo, year), np.nan)
+            if np.isnan(pop):
+                continue
+            geo_rows = yr[yr["geo"] == geo]
+            total_lo += geo_rows["p05_cal"].sum() * pop
+            total_hi += geo_rows["p95_cal"].sum() * pop
+
+        lo_by_year[year] = total_lo
+        hi_by_year[year] = total_hi
 
     if not lo_by_year:
         return None, None
@@ -308,19 +326,14 @@ def _sum_calibrated_sectors(
     lo = pd.Series(lo_by_year)
     hi = pd.Series(hi_by_year)
 
+    # For per-capita: divide total kg by total population to get kg/hab
     if metric == "Per Capita Emissions":
-        if len(geos) == 1:
-            pop = population_df[population_df["geo"] == geos[0]].set_index("year")[
-                "population"
-            ]
-        else:
-            pop = (
-                population_df[population_df["geo"].isin(geos)]
-                .groupby("year")["population"]
-                .sum()
-            )
-        lo = lo / pop.reindex(lo.index)
-        hi = hi / pop.reindex(hi.index)
+        total_pop = (
+            population_df[population_df["geo"].isin(geos)]
+            .groupby("year")["population"].sum()
+        )
+        lo = lo / total_pop.reindex(lo.index)
+        hi = hi / total_pop.reindex(hi.index)
 
     return lo, hi
 
