@@ -1,24 +1,28 @@
 """
-Figure 3 (Revised): Attribution Panels + 2030 Boxplots.
+Figure 3 (Revised): Attribution Panels + 2030 Boxplots  — CALIBRATED.
 
-FONT SIZING RATIONALE:
-  When embedded in a LaTeX two-column paper at \textwidth, figures are
-  displayed at roughly 45-50% of their native pixel size.  All font sizes
-  below are therefore set ~2–2.5× larger than what looks comfortable on
-  screen, so they render legibly on a printed/PDF page.
+Identical to the original except that the 2030 boxplot distributions
+(panels c and d) are built from *calibrated* uncertainty intervals rather
+than the raw MC spread.
 
-  Target minimum readable size in paper: ~7 pt
-  → font.size base: 18 pt  (renders to ~8–9 pt in paper)
-  → axis labels:    20 pt
-  → tick labels:    16 pt
-  → legend:         15 pt
-  → panel letters:  24 pt bold
+For each (country, sector) cell we load the temperature scalar T from
+data/calibration/calibration_temperatures.csv.  The per-MC-sample emission
+value is then replaced by a draw from
+
+    y_cal[s] ~ mean_s  +  T_s · (y_mc[s] - mean_s)
+
+which inflates or deflates the spread around the MC mean by exactly T,
+preserving the full 10 000-sample shape (skewness, etc.) while hitting the
+calibrated 90 % coverage target.
+
+Stacked-area panels (a, b) are unchanged — they use the MC mean, which is
+unaffected by calibration.
 
 Usage:
     python -m scripts.visualization.figure_attribution_panels
 
 Outputs:
-    - outputs/figures/fig3_panel_attribution_with_boxplots.[png|pdf|svg]
+    outputs/figures/fig3_panel_attribution_with_boxplots.[png|pdf|svg]
 """
 
 import pickle
@@ -35,6 +39,7 @@ import pandas as pd
 
 DATASET_PATH = Path("data/pytorch_datasets/unified_dataset.pkl")
 MC_PROJECTIONS_PATH = Path("data/projections/mc_projections.csv")
+CALIBRATION_PATH = Path("data/calibration/calibration_temperatures.csv")
 POPULATION_HIST_PATH = Path("data/full_timeseries/population.csv")
 POPULATION_PROJ_PATH = Path("data/full_timeseries/projections/population.csv")
 
@@ -100,7 +105,6 @@ SECTOR_LABELS = {
     "Other": "Other",
 }
 
-# ── Intuitive country colours ──────────────────────────────────────────────
 COLORS_COUNTRY = {
     "DE": "#2c2c54",
     "FR": "#1a5276",
@@ -111,7 +115,6 @@ COLORS_COUNTRY = {
     "West Europe": "#229954",
 }
 
-# ── Intuitive sector colours ──────────────────────────────────────────────
 COLORS_SECTOR = {
     "Mobility": "#2980b9",
     "Industry": "#717d7e",
@@ -122,23 +125,22 @@ COLORS_SECTOR = {
 }
 
 
+# =============================================================================
+# Style
+# =============================================================================
+
+
 def setup_style():
-    """
-    Font sizes are set ~2× larger than screen-comfortable values so the
-    figure remains legible when scaled down inside a LaTeX document.
-    """
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
             "font.sans-serif": ["Helvetica Neue", "Arial", "DejaVu Sans"],
-            # ── Core sizes (will render ~half this in paper) ──
             "font.size": 18,
             "axes.labelsize": 20,
             "axes.titlesize": 20,
             "xtick.labelsize": 16,
             "ytick.labelsize": 16,
             "legend.fontsize": 15,
-            # ── Lines & ticks ──
             "axes.linewidth": 1.0,
             "xtick.major.width": 1.0,
             "ytick.major.width": 1.0,
@@ -146,7 +148,6 @@ def setup_style():
             "ytick.major.size": 5,
             "axes.spines.top": False,
             "axes.spines.right": False,
-            # ── Backgrounds ──
             "figure.facecolor": "white",
             "axes.facecolor": "white",
             "savefig.facecolor": "white",
@@ -158,7 +159,69 @@ def setup_style():
 
 
 # =============================================================================
-# Data helpers (unchanged logic)
+# Calibration helpers
+# =============================================================================
+
+
+def load_calibration_temperatures() -> dict[tuple[str, str], float]:
+    """
+    Load (geo, sector) -> T from calibration_temperatures.csv.
+    Returns an empty dict (T=1 fallback) if the file does not exist.
+    """
+    if not CALIBRATION_PATH.exists():
+        print(
+            f"[WARNING] Calibration file not found at {CALIBRATION_PATH}. "
+            "Using T=1 (no calibration)."
+        )
+        return {}
+    df = pd.read_csv(CALIBRATION_PATH)
+    return {(row["geo"], row["sector"]): float(row["T"]) for _, row in df.iterrows()}
+
+
+def apply_calibration_to_mc(
+    df_mc: pd.DataFrame,
+    temperatures: dict[tuple[str, str], float],
+    dataset,
+    year: int,
+) -> pd.DataFrame:
+    """
+    For a given projection year, rescale each MC sample's emission value so
+    that the cross-sample spread is multiplied by T_{geo, sector}.
+
+    The transformation is:
+        y_cal = mean_geo_sector  +  T * (y_mc - mean_geo_sector)
+
+    This preserves the MC mean (hence the stacked-area panels are unchanged)
+    while stretching / compressing the distribution around it.
+
+    Returns a copy of the filtered DataFrame with {sector}_total columns
+    replaced by calibrated values, still in physical units (kg·person).
+    """
+    df_year = df_mc[df_mc["year"] == year].copy()
+
+    for sector in OUTPUT_SECTORS:
+        raw_col = f"{sector}_total"
+        mean_col = f"_mean_{sector}"
+
+        # Per-geo mean across MC samples
+        geo_means = df_year.groupby("geo")[raw_col].transform("mean")
+        df_year[mean_col] = geo_means
+
+        # Apply T per geo
+        for geo in df_year["geo"].unique():
+            T = temperatures.get((geo, sector), 1.0)
+            mask = df_year["geo"] == geo
+            df_year.loc[mask, raw_col] = df_year.loc[mask, mean_col] + T * (
+                df_year.loc[mask, raw_col] - df_year.loc[mask, mean_col]
+            )
+
+        df_year = df_year.drop(columns=[mean_col])
+
+    return df_year
+
+
+# =============================================================================
+# Data helpers  (unchanged from original)
 # =============================================================================
 
 
@@ -287,12 +350,29 @@ def build_sector_data(historical, forecast_summary):
     return combined
 
 
-def build_mc_2030_country(df_mc):
-    df_2030 = df_mc[df_mc["year"] == 2030].copy()
+# =============================================================================
+# Calibrated boxplot data builders
+# =============================================================================
+
+
+def build_mc_2030_country_calibrated(
+    df_mc: pd.DataFrame,
+    temperatures: dict[tuple[str, str], float],
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Build per-MC-sample 2030 country totals using calibrated spread.
+
+    Each sector's emission column is rescaled by T before summing to
+    country total, so the resulting distribution reflects calibrated
+    uncertainty.
+    """
     country_groups = ["DE", "FR", "IT", "ES", "PL", "East Europe", "West Europe"]
+
+    df_2030_cal = apply_calibration_to_mc(df_mc, temperatures, dataset=None, year=2030)
+
     records = []
-    for mc in df_2030["mc_sample"].unique():
-        mc_slice = df_2030[df_2030["mc_sample"] == mc]
+    for mc in df_2030_cal["mc_sample"].unique():
+        mc_slice = df_2030_cal[df_2030_cal["mc_sample"] == mc]
         row = {"mc_sample": mc}
         for c in MAJOR_COUNTRIES:
             cd = mc_slice[mc_slice["geo"] == c]
@@ -307,13 +387,19 @@ def build_mc_2030_country(df_mc):
     return pd.DataFrame(records), country_groups
 
 
-def build_mc_2030_sector(df_mc):
-    df_2030 = df_mc[
-        (df_mc["year"] == PROJECTION_YEAR) & (df_mc["geo"].isin(EU27_COUNTRIES))
-    ].copy()
+def build_mc_2030_sector_calibrated(
+    df_mc: pd.DataFrame,
+    temperatures: dict[tuple[str, str], float],
+) -> pd.DataFrame:
+    """
+    Build per-MC-sample 2030 EU27 sector totals using calibrated spread.
+    """
+    df_2030_cal = apply_calibration_to_mc(df_mc, temperatures, dataset=None, year=2030)
+    df_eu = df_2030_cal[df_2030_cal["geo"].isin(EU27_COUNTRIES)]
+
     records = []
-    for mc in df_2030["mc_sample"].unique():
-        mc_slice = df_2030[df_2030["mc_sample"] == mc]
+    for mc in df_eu["mc_sample"].unique():
+        mc_slice = df_eu[df_eu["mc_sample"] == mc]
         row = {"mc_sample": mc}
         for s in OUTPUT_SECTORS:
             row[s] = mc_slice[f"{s}_total"].sum() / 1e9
@@ -321,8 +407,12 @@ def build_mc_2030_sector(df_mc):
     return pd.DataFrame(records)
 
 
+# =============================================================================
+# Legend helper  (unchanged)
+# =============================================================================
+
+
 def _place_legend_above(ax, groups, colors_map, labels_map, ncol=4):
-    """Frameless colour-patch legend placed just above the axes."""
     handles = [
         plt.Rectangle(
             (0, 0), 1, 1, facecolor=colors_map[g], edgecolor="none", alpha=0.88
@@ -337,7 +427,7 @@ def _place_legend_above(ax, groups, colors_map, labels_map, ncol=4):
         bbox_to_anchor=(0.0, 1.03),
         ncol=ncol,
         frameon=False,
-        fontsize=15,  # large enough to survive paper scaling
+        fontsize=15,
         handlelength=0.9,
         handleheight=0.75,
         handletextpad=0.35,
@@ -348,7 +438,7 @@ def _place_legend_above(ax, groups, colors_map, labels_map, ncol=4):
 
 
 # =============================================================================
-# Main figure
+# Main figure  (area panels unchanged; boxplot panels use calibrated data)
 # =============================================================================
 
 
@@ -362,14 +452,13 @@ def create_panel_figure(
 ):
     setup_style()
 
-    # Large native size — will be scaled down in LaTeX
     fig = plt.figure(figsize=(16, 14))
     gs = gridspec.GridSpec(
         2,
         2,
         figure=fig,
         height_ratios=[1.45, 1],
-        hspace=0.45,  # tighter vertical gap between rows
+        hspace=0.45,
         wspace=0.30,
         top=0.91,
         bottom=0.10,
@@ -427,18 +516,18 @@ def create_panel_figure(
         ax.yaxis.grid(True, linestyle="-", alpha=0.15, color="#666666", linewidth=0.5)
         ax.set_axisbelow(True)
 
-    # ── (a) Country stacked area ──────────────────────────────────────────
+    # ── (a) Country stacked area  ─────────────────────────────────────────
     _stacked_area(ax1, plot_country, ordered_country_groups, COLORS_COUNTRY)
     ax1.set_ylabel(ylabel)
     _place_legend_above(
         ax1, ordered_country_groups, COLORS_COUNTRY, COUNTRY_LABELS, ncol=4
     )
 
-    # ── (b) Sector stacked area ───────────────────────────────────────────
+    # ── (b) Sector stacked area  ──────────────────────────────────────────
     _stacked_area(ax2, plot_sector, ordered_sectors, COLORS_SECTOR)
     _place_legend_above(ax2, ordered_sectors, COLORS_SECTOR, SECTOR_LABELS, ncol=3)
 
-    # ── (c) Country boxplots ──────────────────────────────────────────────
+    # ── (c) Country boxplots  — CALIBRATED ───────────────────────────────
     bp_data_country = [mc_country_df[g].values for g in ordered_country_groups]
     bp_labels_country = [COUNTRY_LABELS[g] for g in ordered_country_groups]
     bp = ax3.boxplot(
@@ -458,11 +547,11 @@ def create_panel_figure(
         patch.set_alpha(0.85)
         patch.set_linewidth(0.8)
     ax3.set_xticklabels(bp_labels_country, rotation=35, ha="right", fontsize=15)
-    ax3.set_ylabel(f"{PROJECTION_YEAR} projected CO2 (Gt)")
+    ax3.set_ylabel(f"{PROJECTION_YEAR} projected CO2 (Gt)\n[calibrated 90 % intervals]")
     ax3.yaxis.grid(True, linestyle="-", alpha=0.15, color="#666666", linewidth=0.5)
     ax3.set_axisbelow(True)
 
-    # ── (d) Sector boxplots ───────────────────────────────────────────────
+    # ── (d) Sector boxplots  — CALIBRATED ────────────────────────────────
     bp_data_sector = [mc_sector_df[s].values for s in ordered_sectors]
     bp_labels_sector = [SECTOR_LABELS[s] for s in ordered_sectors]
     bp2 = ax4.boxplot(
@@ -492,18 +581,13 @@ def create_panel_figure(
         ax.spines["left"].set_color("#333333")
         ax.tick_params(axis="both", which="both", length=5, width=1.0)
 
-    # ── Panel letters in figure coordinates — guaranteed consistent alignment ──
-    # Render first so bbox positions are computed, then read axes corners.
     fig.canvas.draw()
 
     def _panel_letter(ax, letter, x_offset=-0.055):
-        """Place panel letter just above-left of the axes top-left corner,
-        using figure coordinates so all four labels sit at the same relative
-        position regardless of legend height."""
-        bbox = ax.get_position()  # fraction of figure
+        bbox = ax.get_position()
         fig.text(
             bbox.x0 + x_offset * bbox.width,
-            bbox.y1 + 0.012,  # small fixed gap above axes top
+            bbox.y1 + 0.012,
             letter,
             fontsize=24,
             fontweight="bold",
@@ -529,21 +613,29 @@ def create_panel_figure(
     print(f"Saved: {OUTPUT_DIR}/fig3_panel_attribution_with_boxplots.[png|pdf|svg]")
 
 
+# =============================================================================
+# Main
+# =============================================================================
+
+
 def main():
     print("=" * 70)
-    print("GENERATING FIGURE 3: ATTRIBUTION PANELS + BOXPLOTS")
+    print("GENERATING FIGURE 3: ATTRIBUTION PANELS + CALIBRATED BOXPLOTS")
     print("=" * 70)
 
     dataset = load_dataset(DATASET_PATH)
     population_df = load_population_data()
+    temperatures = load_calibration_temperatures()
 
     historical, forecast_summary, df_mc = prepare_data(dataset, population_df)
     combined_country, country_groups = build_country_data(historical, forecast_summary)
     combined_sector = build_sector_data(historical, forecast_summary)
 
     hist_max_year = int(historical["year"].max())
-    mc_country_df, _ = build_mc_2030_country(df_mc)
-    mc_sector_df = build_mc_2030_sector(df_mc)
+
+    # ── Boxplot data: calibrated distributions ────────────────────────────
+    mc_country_df, _ = build_mc_2030_country_calibrated(df_mc, temperatures)
+    mc_sector_df = build_mc_2030_sector_calibrated(df_mc, temperatures)
 
     create_panel_figure(
         combined_country,
@@ -553,28 +645,6 @@ def main():
         mc_sector_df,
         hist_max_year,
     )
-
-    # Summary
-    print(f"\n{'=' * 60}")
-    print(f"{PROJECTION_YEAR} MC UNCERTAINTY SUMMARY (Gt CO2)")
-    print(f"{'=' * 60}")
-    print("\nBy Country/Region:")
-    for g in country_groups:
-        vals = mc_country_df[g]
-        label = COUNTRY_LABELS[g].replace("\n", " ")
-        print(
-            f"  {label:<30s} median={vals.median():.3f}  "
-            f"IQR=[{vals.quantile(0.25):.3f}, {vals.quantile(0.75):.3f}]  "
-            f"90%=[{vals.quantile(0.05):.3f}, {vals.quantile(0.95):.3f}]"
-        )
-    print("\nBy Sector:")
-    for s in OUTPUT_SECTORS:
-        vals = mc_sector_df[s]
-        print(
-            f"  {SECTOR_LABELS[s]:<20s} median={vals.median():.3f}  "
-            f"IQR=[{vals.quantile(0.25):.3f}, {vals.quantile(0.75):.3f}]  "
-            f"90%=[{vals.quantile(0.05):.3f}, {vals.quantile(0.95):.3f}]"
-        )
 
     # ── Numbers for paper Section: "Uneven progress" ───────────────────────
     print("\n" + "=" * 60)
