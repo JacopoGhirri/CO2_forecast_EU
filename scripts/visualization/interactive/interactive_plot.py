@@ -103,58 +103,146 @@ BASELINE_YEAR = 2024
 PYPSA_COUNTRY_MAPPING = {"GR": "EL"}
 
 EU27 = [
-    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI", "FR",
-    "DE", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT",
-    "RO", "SK", "SI", "ES", "SE",
+    "AT",
+    "BE",
+    "BG",
+    "HR",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "EL",
+    "FI",
+    "FR",
+    "DE",
+    "HU",
+    "IE",
+    "IT",
+    "LV",
+    "LT",
+    "LU",
+    "MT",
+    "NL",
+    "PL",
+    "PT",
+    "RO",
+    "SK",
+    "SI",
+    "ES",
+    "SE",
 ]
 
 COUNTRY_NAMES = {
-    "AT": "Austria", "BE": "Belgium", "BG": "Bulgaria", "HR": "Croatia",
-    "CY": "Cyprus", "CZ": "Czechia", "DK": "Denmark", "EE": "Estonia",
-    "FI": "Finland", "FR": "France", "DE": "Germany", "EL": "Greece",
-    "HU": "Hungary", "IE": "Ireland", "IT": "Italy", "LV": "Latvia",
-    "LT": "Lithuania", "LU": "Luxembourg", "MT": "Malta", "NL": "Netherlands",
-    "PL": "Poland", "PT": "Portugal", "RO": "Romania", "SK": "Slovakia",
-    "SI": "Slovenia", "ES": "Spain", "SE": "Sweden", "EU27": "EU-27",
+    "AT": "Austria",
+    "BE": "Belgium",
+    "BG": "Bulgaria",
+    "HR": "Croatia",
+    "CY": "Cyprus",
+    "CZ": "Czechia",
+    "DK": "Denmark",
+    "EE": "Estonia",
+    "FI": "Finland",
+    "FR": "France",
+    "DE": "Germany",
+    "EL": "Greece",
+    "HU": "Hungary",
+    "IE": "Ireland",
+    "IT": "Italy",
+    "LV": "Latvia",
+    "LT": "Lithuania",
+    "LU": "Luxembourg",
+    "MT": "Malta",
+    "NL": "Netherlands",
+    "PL": "Poland",
+    "PT": "Portugal",
+    "RO": "Romania",
+    "SK": "Slovakia",
+    "SI": "Slovenia",
+    "ES": "Spain",
+    "SE": "Sweden",
+    "EU27": "EU-27",
 }
 
 ISO3_TO_ISO2 = {
-    "AUT": "AT", "BEL": "BE", "BGR": "BG", "HRV": "HR", "CYP": "CY",
-    "CZE": "CZ", "DNK": "DK", "EST": "EE", "FIN": "FI", "FRA": "FR",
-    "DEU": "DE", "HUN": "HU", "IRL": "IE", "ITA": "IT", "LVA": "LV",
-    "LTU": "LT", "LUX": "LU", "MLT": "MT", "NLD": "NL", "POL": "PL",
-    "PRT": "PT", "ROU": "RO", "SVK": "SK", "SVN": "SI", "ESP": "ES",
-    "SWE": "SE", "GRC": "EL", "EU27": "EU27",
+    "AUT": "AT",
+    "BEL": "BE",
+    "BGR": "BG",
+    "HRV": "HR",
+    "CYP": "CY",
+    "CZE": "CZ",
+    "DNK": "DK",
+    "EST": "EE",
+    "FIN": "FI",
+    "FRA": "FR",
+    "DEU": "DE",
+    "HUN": "HU",
+    "IRL": "IE",
+    "ITA": "IT",
+    "LVA": "LV",
+    "LTU": "LT",
+    "LUX": "LU",
+    "MLT": "MT",
+    "NLD": "NL",
+    "POL": "PL",
+    "PRT": "PT",
+    "ROU": "RO",
+    "SVK": "SK",
+    "SVN": "SI",
+    "ESP": "ES",
+    "SWE": "SE",
+    "GRC": "EL",
+    "EU27": "EU27",
 }
 
 SCENARIOS = {
     "OECD_BAU": {
-        "name": "OECD Business as Usual", "short": "OECD BAU",
-        "marker": "o", "color": "#c0392b", "size": 120,
+        "name": "OECD Business as Usual",
+        "short": "OECD BAU",
+        "marker": "o",
+        "color": "#c0392b",
+        "size": 120,
     },
     "OECD_ET": {
-        "name": "OECD Energy Transition", "short": "OECD ET",
-        "marker": "^", "color": "#27ae60", "size": 120,
+        "name": "OECD Energy Transition",
+        "short": "OECD ET",
+        "marker": "^",
+        "color": "#27ae60",
+        "size": 120,
     },
     "EEA_WEM": {
-        "name": "EEA With Existing Measures", "short": "EEA WEM",
-        "marker": "s", "color": "#8e44ad", "size": 100,
+        "name": "EEA With Existing Measures",
+        "short": "EEA WEM",
+        "marker": "s",
+        "color": "#8e44ad",
+        "size": 100,
     },
     "EEA_WAM": {
-        "name": "EEA With Additional Measures", "short": "EEA WAM",
-        "marker": "D", "color": "#2980b9", "size": 100,
+        "name": "EEA With Additional Measures",
+        "short": "EEA WAM",
+        "marker": "D",
+        "color": "#2980b9",
+        "size": 100,
     },
     "PYPSA_BASE": {
-        "name": "PyPSA Baseline", "short": "PyPSA Base",
-        "marker": "p", "color": "#DDCC77", "size": 120,
+        "name": "PyPSA Baseline",
+        "short": "PyPSA Base",
+        "marker": "p",
+        "color": "#DDCC77",
+        "size": 120,
     },
     "PYPSA_FF55": {
-        "name": "PyPSA Fit for 55", "short": "PyPSA FF55",
-        "marker": "h", "color": "#88CCEE", "size": 120,
+        "name": "PyPSA Fit for 55",
+        "short": "PyPSA FF55",
+        "marker": "h",
+        "color": "#88CCEE",
+        "size": 120,
     },
     "TARGET": {
-        "name": "FF55 Target (EU-27)", "short": "Target",
-        "marker": "*", "color": "#2c3e50", "size": 200,
+        "name": "FF55 Target (EU-27)",
+        "short": "Target",
+        "marker": "*",
+        "color": "#2c3e50",
+        "size": 200,
     },
 }
 
@@ -165,23 +253,25 @@ COLORS = {
     "grid": "#ecf0f1",
 }
 
-plt.rcParams.update({
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Helvetica Neue", "Arial", "DejaVu Sans"],
-    "font.size": 9,
-    "axes.labelsize": 10,
-    "axes.titlesize": 11,
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-    "legend.fontsize": 8,
-    "axes.linewidth": 0.6,
-    "xtick.major.width": 0.6,
-    "ytick.major.width": 0.6,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "figure.facecolor": "white",
-    "axes.facecolor": "white",
-})
+plt.rcParams.update(
+    {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Helvetica Neue", "Arial", "DejaVu Sans"],
+        "font.size": 9,
+        "axes.labelsize": 10,
+        "axes.titlesize": 11,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+        "axes.linewidth": 0.6,
+        "xtick.major.width": 0.6,
+        "ytick.major.width": 0.6,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+    }
+)
 
 
 # =============================================================================
@@ -240,9 +330,9 @@ def load_and_process_data():
     population_df = pd.concat([pop_hist, pop_proj], ignore_index=True)
     population_df["population"] = population_df["population:POP_NC"].astype(float)
     population_df = population_df[["geo", "year", "population"]]
-    population_df = (
-        population_df.groupby(["geo", "year"], as_index=False)["population"].mean()
-    )
+    population_df = population_df.groupby(["geo", "year"], as_index=False)[
+        "population"
+    ].mean()
 
     historical = historical.merge(population_df, on=["geo", "year"], how="left")
     historical["total_CO2"] = (
@@ -265,8 +355,11 @@ def load_and_process_data():
     # Append 2024 anchor to historical
     mc_2024 = df_mc[df_mc["year"] == BASELINE_YEAR].copy()
     anchor_2024 = mc_2024.groupby("geo", as_index=False).agg(
-        {"population": "first", "total_CO2": "mean",
-         **{f"{s}_unnorm": "mean" for s in OUTPUT_SECTORS}}
+        {
+            "population": "first",
+            "total_CO2": "mean",
+            **{f"{s}_unnorm": "mean" for s in OUTPUT_SECTORS},
+        }
     )
     anchor_2024["year"] = BASELINE_YEAR
     for s in OUTPUT_SECTORS:
@@ -280,35 +373,47 @@ def load_and_process_data():
     df_mc_forecast = df_mc[df_mc["year"] > BASELINE_YEAR].copy()
     forecast_summary = (
         df_mc_forecast.groupby(["geo", "year"])
-        .agg({
-            "total_CO2": [
-                "mean",
-                lambda x: np.quantile(x, 0.05),
-                lambda x: np.quantile(x, 0.95),
-            ],
-            "population": "mean",
-            **{f"{s}_unnorm": [
-                "mean",
-                lambda x: np.quantile(x, 0.05),
-                lambda x: np.quantile(x, 0.95),
-            ] for s in OUTPUT_SECTORS},
-        })
+        .agg(
+            {
+                "total_CO2": [
+                    "mean",
+                    lambda x: np.quantile(x, 0.05),
+                    lambda x: np.quantile(x, 0.95),
+                ],
+                "population": "mean",
+                **{
+                    f"{s}_unnorm": [
+                        "mean",
+                        lambda x: np.quantile(x, 0.05),
+                        lambda x: np.quantile(x, 0.95),
+                    ]
+                    for s in OUTPUT_SECTORS
+                },
+            }
+        )
         .reset_index()
     )
-    forecast_summary.columns = (
-        ["geo", "year", "total_CO2_mean", "total_CO2_low", "total_CO2_high",
-         "population"]
-        + [f"{s}_{stat}" for s in OUTPUT_SECTORS for stat in ["mean", "low", "high"]]
-    )
+    forecast_summary.columns = [
+        "geo",
+        "year",
+        "total_CO2_mean",
+        "total_CO2_low",
+        "total_CO2_high",
+        "population",
+    ] + [f"{s}_{stat}" for s in OUTPUT_SECTORS for stat in ["mean", "low", "high"]]
 
     # OECD
     oecd_df = pd.DataFrame()
     if os.path.exists(OECD_PATH):
         oecd_df = pd.read_csv(OECD_PATH)
-        oecd_df = oecd_df.rename(columns={
-            "REF_AREA": "iso3", "SCENARIO": "scenario",
-            "TIME_PERIOD": "year", "OBS_VALUE": "value",
-        })
+        oecd_df = oecd_df.rename(
+            columns={
+                "REF_AREA": "iso3",
+                "SCENARIO": "scenario",
+                "TIME_PERIOD": "year",
+                "OBS_VALUE": "value",
+            }
+        )
         oecd_df["value"] = pd.to_numeric(oecd_df["value"], errors="coerce")
         oecd_df = oecd_df.dropna(subset=["value"])
         oecd_df["geo"] = oecd_df["iso3"].map(ISO3_TO_ISO2)
@@ -332,18 +437,21 @@ def load_and_process_data():
         if os.path.exists(PYPSA_PATH):
             pypsa_raw = pd.read_csv(PYPSA_PATH)
             pypsa_raw["country"] = pypsa_raw["country"].replace(PYPSA_COUNTRY_MAPPING)
-            totals = pypsa_raw.groupby(
-                ["country", "scenario"], as_index=False
-            )["value"].sum()
+            totals = pypsa_raw.groupby(["country", "scenario"], as_index=False)[
+                "value"
+            ].sum()
             # Prefer pre-computed EU27 totals from PyPSA over summing countries
             eu_rows = pypsa_raw[pypsa_raw["country"] == "EU27"]
             if not eu_rows.empty:
                 eu_totals = eu_rows.groupby("scenario", as_index=False)["value"].sum()
                 eu_totals["country"] = "EU27"
-                totals = pd.concat([
-                    totals[totals["country"] != "EU27"],
-                    eu_totals,
-                ], ignore_index=True)
+                totals = pd.concat(
+                    [
+                        totals[totals["country"] != "EU27"],
+                        eu_totals,
+                    ],
+                    ignore_index=True,
+                )
             totals["value_Mt"] = totals["value"] / 1e6
             pypsa_df = totals.rename(columns={"country": "geo"})[
                 ["geo", "scenario", "value_Mt"]
@@ -352,14 +460,19 @@ def load_and_process_data():
     # EU-27 FF55 target: 45% of 1990 emissions
     eu27_ff55_mt = np.nan
     if not oecd_df.empty:
-        eu27_1990 = oecd_df[
-            (oecd_df["year"] == 1990) & (oecd_df["geo"] == "EU27")
-        ]
+        eu27_1990 = oecd_df[(oecd_df["year"] == 1990) & (oecd_df["geo"] == "EU27")]
         if not eu27_1990.empty:
             eu27_ff55_mt = eu27_1990["value"].mean() * 0.45
 
-    return (historical, forecast_summary, oecd_df, eea_df, pypsa_df,
-            population_df, eu27_ff55_mt)
+    return (
+        historical,
+        forecast_summary,
+        oecd_df,
+        eea_df,
+        pypsa_df,
+        population_df,
+        eu27_ff55_mt,
+    )
 
 
 @st.cache_data
@@ -423,8 +536,15 @@ st.markdown(
 )
 
 with st.spinner("Loading data..."):
-    (historical, forecast_summary, oecd_df, eea_df, pypsa_df,
-     population_df, eu27_ff55_mt) = load_and_process_data()
+    (
+        historical,
+        forecast_summary,
+        oecd_df,
+        eea_df,
+        pypsa_df,
+        population_df,
+        eu27_ff55_mt,
+    ) = load_and_process_data()
 
 st.sidebar.header("\U0001f4ca Plot Settings")
 
@@ -436,7 +556,8 @@ country_options = ["EU27"] + country_options_sorted
 country_display = {c: COUNTRY_NAMES.get(c, c) for c in country_options}
 
 selected_country = st.sidebar.selectbox(
-    "Country/Region:", country_options,
+    "Country/Region:",
+    country_options,
     format_func=lambda x: country_display[x],
 )
 metric_type = st.sidebar.radio("Metric:", ["Total Emissions", "Per Capita Emissions"])
@@ -461,9 +582,7 @@ show_target = st.sidebar.checkbox(
 )
 
 if selected_country in ["CY", "MT"] and show_oecd:
-    st.sidebar.warning(
-        f"OECD data not available for {COUNTRY_NAMES[selected_country]}"
-    )
+    st.sidebar.warning(f"OECD data not available for {COUNTRY_NAMES[selected_country]}")
 
 # Prepare country data
 if selected_country == "EU27":
@@ -472,7 +591,9 @@ if selected_country == "EU27":
     )
     eu_pop = (
         population_df[population_df["geo"].isin(EU27)]
-        .groupby("year")["population"].sum().reset_index()
+        .groupby("year")["population"]
+        .sum()
+        .reset_index()
     )
     hist_data["geo"] = "EU27"
     fcast_data["geo"] = "EU27"
@@ -481,9 +602,7 @@ else:
     hist_data = (
         historical[historical["geo"] == selected_country].sort_values("year").copy()
     )
-    fcast_data = forecast_summary[
-        forecast_summary["geo"] == selected_country
-    ].copy()
+    fcast_data = forecast_summary[forecast_summary["geo"] == selected_country].copy()
 
 # Compute emissions metric
 if sector_option == "All sectors combined":
@@ -539,21 +658,32 @@ else:
 
 if not hist_data.empty and "emissions" in hist_data.columns:
     ax.plot(
-        hist_data["year"], hist_data["emissions"] / scale,
-        color=COLORS["historical"], linewidth=2.5, label="Historical", zorder=4,
+        hist_data["year"],
+        hist_data["emissions"] / scale,
+        color=COLORS["historical"],
+        linewidth=2.5,
+        label="Historical",
+        zorder=4,
     )
 
 if not fcast_data.empty and "emissions_mean" in fcast_data.columns:
     ax.plot(
-        fcast_data["year"], fcast_data["emissions_mean"] / scale,
-        color=COLORS["mc_mean"], linewidth=2.5, label="This study (mean)", zorder=4,
+        fcast_data["year"],
+        fcast_data["emissions_mean"] / scale,
+        color=COLORS["mc_mean"],
+        linewidth=2.5,
+        label="This study (mean)",
+        zorder=4,
     )
     if show_ci and "emissions_low" in fcast_data.columns:
         ax.fill_between(
             fcast_data["year"],
             fcast_data["emissions_low"] / scale,
             fcast_data["emissions_high"] / scale,
-            color=COLORS["mc_ci"], alpha=0.3, label="MC CI", zorder=2,
+            color=COLORS["mc_ci"],
+            alpha=0.3,
+            label="MC CI",
+            zorder=2,
         )
 
 pop_2030 = None
@@ -563,14 +693,17 @@ if metric_type == "Per Capita Emissions":
         pop_2030 = p["population"].values[0] if len(p) > 0 else None
     else:
         p = population_df[
-            (population_df["geo"] == selected_country)
-            & (population_df["year"] == 2030)
+            (population_df["geo"] == selected_country) & (population_df["year"] == 2030)
         ]
         pop_2030 = p["population"].iloc[0] if not p.empty else None
 
 # OECD
-if (show_oecd and sector_option == "All sectors combined"
-        and selected_country not in ["CY", "MT"] and not oecd_df.empty):
+if (
+    show_oecd
+    and sector_option == "All sectors combined"
+    and selected_country not in ["CY", "MT"]
+    and not oecd_df.empty
+):
     oecd_2030 = oecd_df[
         (oecd_df["geo"] == selected_country) & (oecd_df["year"] == 2030)
     ]
@@ -578,12 +711,22 @@ if (show_oecd and sector_option == "All sectors combined"
         row = oecd_2030[oecd_2030["scenario"] == scen]
         if not row.empty:
             val_mt = row["value"].values[0]
-            val = (val_mt * 1e6) / (pop_2030 * 1000) if (metric_type == "Per Capita Emissions" and pop_2030) else val_mt
+            val = (
+                (val_mt * 1e6) / (pop_2030 * 1000)
+                if (metric_type == "Per Capita Emissions" and pop_2030)
+                else val_mt
+            )
             cfg = SCENARIOS[key]
             ax.scatter(
-                2030, val, color=cfg["color"], marker=cfg["marker"],
-                s=cfg["size"], edgecolors="white", linewidths=1.5,
-                label=cfg["name"], zorder=5,
+                2030,
+                val,
+                color=cfg["color"],
+                marker=cfg["marker"],
+                s=cfg["size"],
+                edgecolors="white",
+                linewidths=1.5,
+                label=cfg["name"],
+                zorder=5,
             )
 
 # EEA
@@ -593,12 +736,22 @@ if show_eea and eea_df is not None and sector_option == "All sectors combined":
         row = eea_c[eea_c["scenario"] == scen]
         if not row.empty:
             val_mt = row["value_Mt"].values[0]
-            val = (val_mt * 1e6) / (pop_2030 * 1000) if (metric_type == "Per Capita Emissions" and pop_2030) else val_mt
+            val = (
+                (val_mt * 1e6) / (pop_2030 * 1000)
+                if (metric_type == "Per Capita Emissions" and pop_2030)
+                else val_mt
+            )
             cfg = SCENARIOS[key]
             ax.scatter(
-                2030, val, color=cfg["color"], marker=cfg["marker"],
-                s=cfg["size"], edgecolors="white", linewidths=1.5,
-                label=cfg["name"], zorder=5,
+                2030,
+                val,
+                color=cfg["color"],
+                marker=cfg["marker"],
+                s=cfg["size"],
+                edgecolors="white",
+                linewidths=1.5,
+                label=cfg["name"],
+                zorder=5,
             )
 
 # PyPSA
@@ -615,38 +768,63 @@ if show_pypsa and pypsa_df is not None and sector_option == "All sectors combine
                 break
         if not matched.empty:
             val_mt = matched["value_Mt"].values[0]
-            val = (val_mt * 1e6) / (pop_2030 * 1000) if (metric_type == "Per Capita Emissions" and pop_2030) else val_mt
+            val = (
+                (val_mt * 1e6) / (pop_2030 * 1000)
+                if (metric_type == "Per Capita Emissions" and pop_2030)
+                else val_mt
+            )
             cfg = SCENARIOS[key]
             ax.scatter(
-                2030, val, color=cfg["color"], marker=cfg["marker"],
-                s=cfg["size"], edgecolors="white", linewidths=1.5,
-                label=cfg["name"], zorder=5,
+                2030,
+                val,
+                color=cfg["color"],
+                marker=cfg["marker"],
+                s=cfg["size"],
+                edgecolors="white",
+                linewidths=1.5,
+                label=cfg["name"],
+                zorder=5,
             )
 
 # FF55 target — EU-27 only
-if (show_target and selected_country == "EU27"
-        and sector_option == "All sectors combined"
-        and not np.isnan(eu27_ff55_mt)):
-    target_val = (eu27_ff55_mt * 1e6) / (pop_2030 * 1000) if (metric_type == "Per Capita Emissions" and pop_2030) else eu27_ff55_mt
+if (
+    show_target
+    and selected_country == "EU27"
+    and sector_option == "All sectors combined"
+    and not np.isnan(eu27_ff55_mt)
+):
+    target_val = (
+        (eu27_ff55_mt * 1e6) / (pop_2030 * 1000)
+        if (metric_type == "Per Capita Emissions" and pop_2030)
+        else eu27_ff55_mt
+    )
     cfg = SCENARIOS["TARGET"]
     ax.scatter(
-        2030, target_val, color=cfg["color"], marker=cfg["marker"],
-        s=cfg["size"], edgecolors="white", linewidths=1.5,
-        label="FF55 target (55% from 1990)", zorder=6,
+        2030,
+        target_val,
+        color=cfg["color"],
+        marker=cfg["marker"],
+        s=cfg["size"],
+        edgecolors="white",
+        linewidths=1.5,
+        label="FF55 target (55% from 1990)",
+        zorder=6,
     )
 
 country_name = COUNTRY_NAMES.get(selected_country, selected_country)
 sector_label = selected_sector if selected_sector else "All sectors"
 ax.set_title(
     f"{country_name} \u2013 {metric_type} ({sector_label})",
-    fontsize=14, fontweight="bold",
+    fontsize=14,
+    fontweight="bold",
 )
 ax.set_xlabel("Year", fontsize=11)
 ax.set_ylabel(unit, fontsize=11)
 ax.grid(True, alpha=0.3, linestyle="-", linewidth=0.5, color=COLORS["grid"])
 ax.set_axisbelow(True)
-ax.legend(loc="upper right", framealpha=0.95, edgecolor="#bdc3c7",
-          fontsize=8, frameon=True)
+ax.legend(
+    loc="upper right", framealpha=0.95, edgecolor="#bdc3c7", fontsize=8, frameon=True
+)
 ax.set_xticks(range(2010, 2031, 2))
 ax.set_xlim(2009, 2031)
 plt.tight_layout()
@@ -660,7 +838,8 @@ with col1:
     plt.savefig("temp_plot.png", dpi=300, bbox_inches="tight", facecolor="white")
     with open("temp_plot.png", "rb") as f:
         st.download_button(
-            label="\U0001f4e5 Download Plot (PNG)", data=f,
+            label="\U0001f4e5 Download Plot (PNG)",
+            data=f,
             file_name=f"{selected_country}_{metric_type.replace(' ', '_')}.png",
             mime="image/png",
         )
@@ -702,9 +881,11 @@ with st.expander("\U0001f4cb View underlying data"):
             display_fcast = fcast_data[cols].copy()
             for c in cols[1:]:
                 display_fcast[c] = display_fcast[c] / scale
-            display_fcast = display_fcast.rename(columns={
-                "emissions_mean": f"Mean ({unit})",
-                "emissions_low": f"MC 5th percentile ({unit})",
-                "emissions_high": f"MC 95th percentile ({unit})",
-            })
+            display_fcast = display_fcast.rename(
+                columns={
+                    "emissions_mean": f"Mean ({unit})",
+                    "emissions_low": f"MC 5th percentile ({unit})",
+                    "emissions_high": f"MC 95th percentile ({unit})",
+                }
+            )
             st.dataframe(display_fcast.round(2))

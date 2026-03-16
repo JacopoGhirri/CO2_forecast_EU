@@ -556,7 +556,7 @@ def main():
 
     # Summary
     print(f"\n{'=' * 60}")
-    print(f"{PROJECTION_YEAR} MC UNCERTAINTY SUMMARY (Gt CO₂)")
+    print(f"{PROJECTION_YEAR} MC UNCERTAINTY SUMMARY (Gt CO2)")
     print(f"{'=' * 60}")
     print("\nBy Country/Region:")
     for g in country_groups:
