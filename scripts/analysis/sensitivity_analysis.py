@@ -563,9 +563,7 @@ def run_sensitivity(
 
                 writer.writerow([SECTORS[s], name, score, sign])
 
-            spearman_results[f"sector_{s}"] = dict(
-                zip(var_names, importances)
-            )
+            spearman_results[f"sector_{s}"] = dict(zip(var_names, importances))
 
     print(f"Spearman results ({mode}) written to {out_csv_spearman}")
     return problem, sobol_results, spearman_results

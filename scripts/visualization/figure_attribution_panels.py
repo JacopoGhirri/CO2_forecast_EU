@@ -354,18 +354,10 @@ def build_sector_data(historical, forecast_summary):
 # Calibrated boxplot data builders
 # =============================================================================
 
-
 def build_mc_2030_country_calibrated(
-    df_mc: pd.DataFrame,
-    temperatures: dict[tuple[str, str], float],
-) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Build per-MC-sample 2030 country totals using calibrated spread.
-
-    Each sector's emission column is rescaled by T before summing to
-    country total, so the resulting distribution reflects calibrated
-    uncertainty.
-    """
+    df_mc,
+    temperatures,
+):
     country_groups = ["DE", "FR", "IT", "ES", "PL", "East Europe", "West Europe"]
 
     df_2030_cal = apply_calibration_to_mc(df_mc, temperatures, dataset=None, year=2030)
@@ -374,16 +366,34 @@ def build_mc_2030_country_calibrated(
     for mc in df_2030_cal["mc_sample"].unique():
         mc_slice = df_2030_cal[df_2030_cal["mc_sample"] == mc]
         row = {"mc_sample": mc}
+
         for c in MAJOR_COUNTRIES:
             cd = mc_slice[mc_slice["geo"] == c]
-            row[c] = cd["total_CO2"].values[0] / 1e9 if not cd.empty else 0
+            if cd.empty:
+                row[c] = 0.0
+            else:
+                # Sum calibrated sector columns — total_CO2 is never updated
+                # by apply_calibration_to_mc so must not be used here
+                row[c] = sum(
+                    cd[f"{s}_total"].values[0] for s in OUTPUT_SECTORS
+                ) / 1e9
+
         row["East Europe"] = (
-            mc_slice[mc_slice["geo"].isin(EAST_EUROPE)]["total_CO2"].sum() / 1e9
+            mc_slice[mc_slice["geo"].isin(EAST_EUROPE)]
+            [[f"{s}_total" for s in OUTPUT_SECTORS]]
+            .sum()
+            .sum()
+            / 1e9
         )
         row["West Europe"] = (
-            mc_slice[mc_slice["geo"].isin(WEST_EUROPE)]["total_CO2"].sum() / 1e9
+            mc_slice[mc_slice["geo"].isin(WEST_EUROPE)]
+            [[f"{s}_total" for s in OUTPUT_SECTORS]]
+            .sum()
+            .sum()
+            / 1e9
         )
         records.append(row)
+
     return pd.DataFrame(records), country_groups
 
 
@@ -532,6 +542,7 @@ def create_panel_figure(
     bp_labels_country = [COUNTRY_LABELS[g] for g in ordered_country_groups]
     bp = ax3.boxplot(
         bp_data_country,
+        whis=(5, 95),
         vert=True,
         patch_artist=True,
         widths=0.55,
@@ -556,6 +567,7 @@ def create_panel_figure(
     bp_labels_sector = [SECTOR_LABELS[s] for s in ordered_sectors]
     bp2 = ax4.boxplot(
         bp_data_sector,
+        whis=(5, 95),
         vert=True,
         patch_artist=True,
         widths=0.55,

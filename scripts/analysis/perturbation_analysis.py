@@ -17,7 +17,7 @@ Variable Modes:
     - "inputonly": Include only input variables (exclude context)
 
 Usage:
-    python -m scripts.analysis.sensitivity.perturbation_analysis
+    python -m scripts.analysis.perturbation_analysis
 
 Outputs:
     For each mode (full/inputonly):
