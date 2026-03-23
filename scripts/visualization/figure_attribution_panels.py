@@ -92,8 +92,8 @@ COUNTRY_LABELS = {
     "IT": "Italy",
     "ES": "Spain",
     "PL": "Poland",
-    "East Europe": "Other C. & E. Europe",
-    "West Europe": "Other W. Europe",
+    "East Europe": "Other - C. & E. EU27",
+    "West Europe": "Other - W. EU27",
 }
 
 SECTOR_LABELS = {
