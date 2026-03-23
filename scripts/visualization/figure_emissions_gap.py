@@ -25,6 +25,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.lines import Line2D
+import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
 
@@ -456,6 +457,11 @@ def create_figure(df, ff55_pct, ff55_mt):
     n_c = len(countries)
     x_c = np.arange(n_c)
     ax_c.set_yscale("symlog", linthresh=5)
+    ax_c.yaxis.set_major_formatter(
+        ticker.FuncFormatter(
+            lambda x, _: "" if x == 0 else f"{x:g}"
+        )
+    )
 
     y_all = []
     for key in src_keys:
@@ -548,19 +554,17 @@ def create_figure(df, ff55_pct, ff55_mt):
             label="FF55 target (EU-27)",
         )
     )
-    leg = fig.legend(
+    leg = ax_c.legend(
         handles=handles,
-        loc="center right",
-        bbox_to_anchor=(1.00, 0.5),
+        loc="upper right",
+        #bbox_to_anchor=(1.00, 0.5),
         frameon=True,
         framealpha=0.95,
         edgecolor="#bdc3c7",
-        fontsize=16,
+        fontsize=14,
         handletextpad=0.6,
-        labelspacing=0.85,
-        borderpad=0.8,
-        title="Source / scenario",
-        title_fontsize=16,
+        labelspacing=0.5,
+        borderpad=0.5,
     )
     leg.get_frame().set_linewidth(0.5)
 
