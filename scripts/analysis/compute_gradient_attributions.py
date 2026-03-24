@@ -172,9 +172,7 @@ def load_models(
     # (VAE + predictor), so we load it via FullPredictionModel to place
     # weights into both sub-models correctly.
     full_model = FullPredictionModel(vae=vae_model, predictor=predictor)
-    full_model.load_state_dict(
-        torch.load(predictor_model_path, map_location="cpu")
-    )
+    full_model.load_state_dict(torch.load(predictor_model_path, map_location="cpu"))
     full_model.eval()
 
     return vae_model, predictor, latent_dim
@@ -225,10 +223,9 @@ def compute_predictor_attributions(
     unique_input_names = latent_names + context_names
 
     # Output neuron names: emission deltas then uncertainties
-    output_names = (
-        [f"emission_delta_{s}" for s in EMISSION_SECTORS]
-        + [f"uncertainty_{s}" for s in EMISSION_SECTORS]
-    )
+    output_names = [f"emission_delta_{s}" for s in EMISSION_SECTORS] + [
+        f"uncertainty_{s}" for s in EMISSION_SECTORS
+    ]
     n_outputs = len(output_names)
     n_unique_inputs = len(unique_input_names)
 
@@ -289,13 +286,13 @@ def compute_predictor_attributions(
 
             # Split into the four logical groups
             offset = 0
-            grad_z_t = raw_grad[offset: offset + latent_dim]
+            grad_z_t = raw_grad[offset : offset + latent_dim]
             offset += latent_dim
-            grad_c_t = raw_grad[offset: offset + context_dim]
+            grad_c_t = raw_grad[offset : offset + context_dim]
             offset += context_dim
-            grad_z_t1 = raw_grad[offset: offset + latent_dim]
+            grad_z_t1 = raw_grad[offset : offset + latent_dim]
             offset += latent_dim
-            grad_c_t1 = raw_grad[offset: offset + context_dim]
+            grad_c_t1 = raw_grad[offset : offset + context_dim]
 
             # Average the two timesteps for each logical variable
             grad_latent = (grad_z_t + grad_z_t1) / 2.0
@@ -367,13 +364,7 @@ def compute_encoder_attributions(
             print(f"  Encoder: sample {idx + 1}/{n_samples}")
 
         # Prepare input with gradient tracking
-        x = (
-            dataset.input_df[idx]
-            .unsqueeze(0)
-            .to(DEVICE)
-            .detach()
-            .requires_grad_(True)
-        )
+        x = dataset.input_df[idx].unsqueeze(0).to(DEVICE).detach().requires_grad_(True)
 
         # Forward through encoder — only mean is needed
         mean, _ = encoder(x)  # mean shape: (1, latent_dim)

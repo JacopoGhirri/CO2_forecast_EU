@@ -75,18 +75,18 @@ SCALE_SECTORS_BY_EMISSIONS: bool = True
 # Used only when SCALE_SECTORS_BY_EMISSIONS is True.
 SECTOR_EMISSIONS_2030 = {
     "HeatingCooling": 0.238,
-    "Industry":       0.643,
-    "Land":           0.123,
-    "Mobility":       0.869,
-    "Other":          0.135,
-    "Power":          0.354,
+    "Industry": 0.643,
+    "Land": 0.123,
+    "Mobility": 0.869,
+    "Other": 0.135,
+    "Power": 0.354,
 }
 
 # ── Visual tuning ────────────────────────────────────────────────────────────
 LINK_ALPHA: float = 0.35
 NODE_WIDTH: float = 0.022
 NODE_GAP: float = 0.018
-COLOR_LINK = "#999999"         # gray ribbons
+COLOR_LINK = "#999999"  # gray ribbons
 
 # ── Sector colours ───────────────────────────────────────────────────────────
 COLORS_SECTOR = {
@@ -100,8 +100,8 @@ COLORS_SECTOR = {
 
 # ── Centre column colours (latent / socioeconomic / climate) ─────────────────
 COLOR_LATENT = "#2C3E50"
-COLOR_SOCIOECONOMIC = "#D4AC0D"    # warm gold for GDP / Population
-COLOR_CLIMATE = "#1ABC9C"          # teal for climate variables
+COLOR_SOCIOECONOMIC = "#D4AC0D"  # warm gold for GDP / Population
+COLOR_CLIMATE = "#1ABC9C"  # teal for climate variables
 
 # Mapping: human-readable context name → colour category
 CENTRE_COLOR_MAP = {
@@ -123,68 +123,92 @@ INPUT_GROUPS = {
     "Fuel Prices": {
         "color": "#717d7e",
         "members": [
-            "Diesel Price", "Gasoline Price", "Light Fuel Oil Price",
+            "Diesel Price",
+            "Gasoline Price",
+            "Light Fuel Oil Price",
         ],
     },
     "Electricity Mix": {
         "color": "#E67E22",
         "members": [
-            "Fossil Fuels Power", "Solar Power",
-            "Wind Power", "Hydro Power", "Renewables (total)",
-            "Pumped Electricity Storage", "Electricity Exports",
-            "Electricity Imports", "Electricity Losses",
+            "Fossil Fuels Power",
+            "Solar Power",
+            "Wind Power",
+            "Hydro Power",
+            "Renewables (total)",
+            "Pumped Electricity Storage",
+            "Electricity Exports",
+            "Electricity Imports",
+            "Electricity Losses",
         ],
     },
     "Heating Tech.": {
         "color": "#e74c3c",
         "members": [
-            "Heat Pump Capacity", "Solar Thermal Surface",
+            "Heat Pump Capacity",
+            "Solar Thermal Surface",
         ],
     },
     "Transport": {
         "color": "#2980B9",
         "members": [
-            "Sales of BEV Cars", "Sales of BEV Buses",
-            "EV Car Stock Share", "EV Bus Stock Share",
-            "Modal Split (road)", "Modal Split (rail)",
-            "Modal Split (air)", "Modal Split (sea)",
-            "Passenger Trains (diesel)", "Passenger Trains (elec.)",
-            "Goods Trains (diesel)", "Goods Trains (elec.)",
+            "Sales of BEV Cars",
+            "Sales of BEV Buses",
+            "EV Car Stock Share",
+            "EV Bus Stock Share",
+            "Modal Split (road)",
+            "Modal Split (rail)",
+            "Modal Split (air)",
+            "Modal Split (sea)",
+            "Passenger Trains (diesel)",
+            "Passenger Trains (elec.)",
+            "Goods Trains (diesel)",
+            "Goods Trains (elec.)",
         ],
     },
     "Land & Agri.": {
         "color": "#27AE60",
         "members": [
-            "Cropland Area", "Forest Area", "Wheat Production",
-            "Meat Production", "Fruit Production",
-            "Poultry Production", "Vegetable Production",
+            "Cropland Area",
+            "Forest Area",
+            "Wheat Production",
+            "Meat Production",
+            "Fruit Production",
+            "Poultry Production",
+            "Vegetable Production",
         ],
     },
     "Trade": {
         "color": "#8E44AD",
         "members": [
-            "Import Vol. (fuels)", "Import Vol. (raw mat.)",
-            "Import Vol. (chemicals)", "Import Vol. (food)",
-            "Import Vol. (machinery)", "Export Vol. (fuels)",
-            "Export Vol. (raw mat.)", "Export Vol. (chemicals)",
+            "Import Vol. (fuels)",
+            "Import Vol. (raw mat.)",
+            "Import Vol. (chemicals)",
+            "Import Vol. (food)",
+            "Import Vol. (machinery)",
+            "Export Vol. (fuels)",
+            "Export Vol. (raw mat.)",
+            "Export Vol. (chemicals)",
             "Export Vol. (machinery)",
         ],
     },
     "Energy Demand": {
         "color": "#D35400",
         "members": [
-            "Energy Cons. (total)", "Industrial Energy Consumption",
+            "Energy Cons. (total)",
+            "Industrial Energy Consumption",
             "Transportation Energy Consumption",
         ],
     },
     "Policy": {
         "color": "#717D7E",
         "members": [
-            "ETS Carbon Price", "Energy Taxes",
+            "ETS Carbon Price",
+            "Energy Taxes",
         ],
     },
 }
-INPUT_DEFAULT_COLOR = "#95A5A6"    # gray for ungrouped variables
+INPUT_DEFAULT_COLOR = "#95A5A6"  # gray for ungrouped variables
 
 
 def _input_color(human_name: str) -> str:
@@ -201,8 +225,14 @@ def _centre_color(human_name: str) -> str:
         return CENTRE_COLOR_MAP[human_name]
     return COLOR_LATENT
 
+
 SECTOR_ORDER = [
-    "Mobility", "Industry", "Power", "HeatingCooling", "Land", "Other",
+    "Mobility",
+    "Industry",
+    "Power",
+    "HeatingCooling",
+    "Land",
+    "Other",
 ]
 SECTOR_LABELS = {s: s for s in SECTOR_ORDER}
 
@@ -275,12 +305,17 @@ NAME_MAP = {
 
 def setup_style():
     """Configure matplotlib for publication output."""
-    plt.rcParams.update({
-        "font.family": "sans-serif",
-        "font.sans-serif": ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"],
-        "font.size": 9, "axes.linewidth": 0.5,
-        "figure.dpi": 300, "pdf.fonttype": 42, "ps.fonttype": 42,
-    })
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"],
+            "font.size": 9,
+            "axes.linewidth": 0.5,
+            "figure.dpi": 300,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+        }
+    )
 
 
 def strip_monthly_suffix(name: str) -> str:
@@ -366,9 +401,12 @@ def load_encoder(csv_path: Path):
 
 def build_right(pred_df: pd.DataFrame):
     """Build (latent/context, sector, weight) links from predictor attributions."""
-    return [(var, sec, float(pred_df.loc[sec, var]))
-            for sec in pred_df.index for var in pred_df.columns
-            if pred_df.loc[sec, var] > 0]
+    return [
+        (var, sec, float(pred_df.loc[sec, var]))
+        for sec in pred_df.index
+        for var in pred_df.columns
+        if pred_df.loc[sec, var] > 0
+    ]
 
 
 def build_left(enc_df: pd.DataFrame, needed: set[str]):
@@ -447,8 +485,10 @@ def normalise(right, left, scale_by_emissions=False):
     stot: dict[str, float] = {}
     for s, d, w in right:
         stot[d] = stot.get(d, 0) + w
-    rn = [(s, d, w / stot[d] * sector_target.get(d, 1.0) if stot[d] > 0 else 0)
-          for s, d, w in right]
+    rn = [
+        (s, d, w / stot[d] * sector_target.get(d, 1.0) if stot[d] > 0 else 0)
+        for s, d, w in right
+    ]
 
     # Per-latent right-side total
     lr: dict[str, float] = {}
@@ -461,9 +501,10 @@ def normalise(right, left, scale_by_emissions=False):
     for _, d, w in left:
         ll[d] = ll.get(d, 0) + w
 
-    ln = [(s, d, w / ll[d] * lr.get(d, 0)
-           if ll[d] > 0 and lr.get(d, 0) > 0 else 0)
-          for s, d, w in left]
+    ln = [
+        (s, d, w / ll[d] * lr.get(d, 0) if ll[d] > 0 and lr.get(d, 0) > 0 else 0)
+        for s, d, w in left
+    ]
 
     return rn, ln
 
@@ -477,17 +518,32 @@ def _draw_ribbon(ax, x0, y0t, y0b, x1, y1t, y1b, color, alpha):
     """Filled Bézier ribbon between two vertical slots."""
     dx = x1 - x0
     verts = [
-        (x0, y0t), (x0 + .4*dx, y0t), (x1 - .4*dx, y1t), (x1, y1t),
-        (x1, y1b), (x1 - .4*dx, y1b), (x0 + .4*dx, y0b), (x0, y0b),
+        (x0, y0t),
+        (x0 + 0.4 * dx, y0t),
+        (x1 - 0.4 * dx, y1t),
+        (x1, y1t),
+        (x1, y1b),
+        (x1 - 0.4 * dx, y1b),
+        (x0 + 0.4 * dx, y0b),
+        (x0, y0b),
         (x0, y0t),
     ]
     codes = [
-        MplPath.MOVETO, MplPath.CURVE4, MplPath.CURVE4, MplPath.CURVE4,
-        MplPath.LINETO, MplPath.CURVE4, MplPath.CURVE4, MplPath.CURVE4,
+        MplPath.MOVETO,
+        MplPath.CURVE4,
+        MplPath.CURVE4,
+        MplPath.CURVE4,
+        MplPath.LINETO,
+        MplPath.CURVE4,
+        MplPath.CURVE4,
+        MplPath.CURVE4,
         MplPath.CLOSEPOLY,
     ]
-    ax.add_patch(mpatches.PathPatch(
-        MplPath(verts, codes), fc=color, ec="none", alpha=alpha, lw=0))
+    ax.add_patch(
+        mpatches.PathPatch(
+            MplPath(verts, codes), fc=color, ec="none", alpha=alpha, lw=0
+        )
+    )
 
 
 def _stack(names, raw_heights, gap):
@@ -583,16 +639,34 @@ def draw_panel(ax, right_links, left_links, title):
     cur_sc_L = {nm: yb + h for nm, (yb, h) in pos_sc.items()}
 
     # ── Right ribbons (centre → sector) ─────────────────────────────────────
-    for src, dst, w in sorted(right_links, key=lambda t: (
-        SECTOR_ORDER.index(t[1]) if t[1] in SECTOR_ORDER else 99, _lsort(t[0]))):
+    for src, dst, w in sorted(
+        right_links,
+        key=lambda t: (
+            SECTOR_ORDER.index(t[1]) if t[1] in SECTOR_ORDER else 99,
+            _lsort(t[0]),
+        ),
+    ):
         if w <= 0 or src not in pos_cn or dst not in pos_sc:
             continue
         h_s = w * sc_cn
         h_d = w * sc_sc
-        y0t = cur_cn_R[src]; y0b = y0t - h_s; cur_cn_R[src] = y0b
-        y1t = cur_sc_L[dst]; y1b = y1t - h_d; cur_sc_L[dst] = y1b
-        _draw_ribbon(ax, x_C + NODE_WIDTH/2, y0t, y0b,
-                     x_R - NODE_WIDTH/2, y1t, y1b, COLOR_LINK, LINK_ALPHA)
+        y0t = cur_cn_R[src]
+        y0b = y0t - h_s
+        cur_cn_R[src] = y0b
+        y1t = cur_sc_L[dst]
+        y1b = y1t - h_d
+        cur_sc_L[dst] = y1b
+        _draw_ribbon(
+            ax,
+            x_C + NODE_WIDTH / 2,
+            y0t,
+            y0b,
+            x_R - NODE_WIDTH / 2,
+            y1t,
+            y1b,
+            COLOR_LINK,
+            LINK_ALPHA,
+        )
 
     # ── Left ribbons (input → latent) ───────────────────────────────────────
     for src, dst, w in sorted(left_links, key=lambda t: (_lsort(t[1]), t[0])):
@@ -600,10 +674,23 @@ def draw_panel(ax, right_links, left_links, title):
             continue
         h_s = w * sc_in
         h_d = w * sc_cn
-        y0t = cur_in_R[src]; y0b = y0t - h_s; cur_in_R[src] = y0b
-        y1t = cur_cn_L[dst]; y1b = y1t - h_d; cur_cn_L[dst] = y1b
-        _draw_ribbon(ax, x_L + NODE_WIDTH/2, y0t, y0b,
-                     x_C - NODE_WIDTH/2, y1t, y1b, COLOR_LINK, LINK_ALPHA)
+        y0t = cur_in_R[src]
+        y0b = y0t - h_s
+        cur_in_R[src] = y0b
+        y1t = cur_cn_L[dst]
+        y1b = y1t - h_d
+        cur_cn_L[dst] = y1b
+        _draw_ribbon(
+            ax,
+            x_L + NODE_WIDTH / 2,
+            y0t,
+            y0b,
+            x_C - NODE_WIDTH / 2,
+            y1t,
+            y1b,
+            COLOR_LINK,
+            LINK_ALPHA,
+        )
 
     # ── Node bars ───────────────────────────────────────────────────────────
     NW = NODE_WIDTH
@@ -612,29 +699,58 @@ def draw_panel(ax, right_links, left_links, title):
     # Input nodes — coloured by thematic group
     for nm, (yb, h) in pos_in.items():
         hname = humanise(nm)
-        ax.add_patch(plt.Rectangle((x_L - NW/2, yb), NW, h,
-                                    fc=_input_color(hname), ec="none"))
-        ax.text(x_L - NW/2 - TEXT_PAD, yb + h/2, hname,
-                ha="right", va="center", fontsize=8.5, color="#222")
+        ax.add_patch(
+            plt.Rectangle((x_L - NW / 2, yb), NW, h, fc=_input_color(hname), ec="none")
+        )
+        ax.text(
+            x_L - NW / 2 - TEXT_PAD,
+            yb + h / 2,
+            hname,
+            ha="right",
+            va="center",
+            fontsize=8.5,
+            color="#222",
+        )
 
     # Centre nodes — latent / socioeconomic / climate colours
     for nm, (yb, h) in pos_cn.items():
         hname = humanise(nm)
-        ax.add_patch(plt.Rectangle((x_C - NW/2, yb), NW, h,
-                                    fc=_centre_color(hname), ec="none"))
-        ax.text(x_C - NW/2 - TEXT_PAD, yb + h/2, hname,
-                ha="right", va="center", fontsize=8.5, color="#222")
+        ax.add_patch(
+            plt.Rectangle((x_C - NW / 2, yb), NW, h, fc=_centre_color(hname), ec="none")
+        )
+        ax.text(
+            x_C - NW / 2 - TEXT_PAD,
+            yb + h / 2,
+            hname,
+            ha="right",
+            va="center",
+            fontsize=8.5,
+            color="#222",
+        )
 
     # Sector nodes — per-sector colours
     for nm, (yb, h) in pos_sc.items():
-        ax.add_patch(plt.Rectangle((x_R - NW/2, yb), NW, h,
-                                    fc=COLORS_SECTOR.get(nm, "#95A5A6"),
-                                    ec="none"))
-        ax.text(x_R + NW/2 + TEXT_PAD, yb + h/2, SECTOR_LABELS.get(nm, nm),
-                ha="left", va="center", fontsize=9.5, color="#222",
-                fontweight="medium")
+        ax.add_patch(
+            plt.Rectangle(
+                (x_R - NW / 2, yb),
+                NW,
+                h,
+                fc=COLORS_SECTOR.get(nm, "#95A5A6"),
+                ec="none",
+            )
+        )
+        ax.text(
+            x_R + NW / 2 + TEXT_PAD,
+            yb + h / 2,
+            SECTOR_LABELS.get(nm, nm),
+            ha="left",
+            va="center",
+            fontsize=9.5,
+            color="#222",
+            fontweight="medium",
+        )
 
-    #ax.set_title(title, fontsize=11, pad=10)
+    # ax.set_title(title, fontsize=11, pad=10)
 
 
 # =============================================================================
@@ -685,8 +801,7 @@ def create_sankey_figure(
     for name, pdf, title in specs:
         rl = apply_filt(build_right(pdf), top_k_per_dest, top_k_total, key=0)
         needed = {s for s, _, _ in rl if s.startswith("latent_")}
-        ll = apply_filt(build_left(enc_df, needed),
-                        top_k_per_dest, top_k_total, key=0)
+        ll = apply_filt(build_left(enc_df, needed), top_k_per_dest, top_k_total, key=0)
         rn, ln = normalise(rl, ll, scale_by_emissions=scale_by_emissions)
         print(f"  Panel '{name}': {len(rl)} right links, {len(ll)} left links")
         panels.append((rn, ln, title))
@@ -696,8 +811,7 @@ def create_sankey_figure(
     if n == 1:
         fig, ax = plt.subplots(1, 1, figsize=(16, 7.5))
         axes = [ax]
-        panels[0] = (panels[0][0], panels[0][1],
-                      "Total emissions gradient flow")
+        panels[0] = (panels[0][0], panels[0][1], "Total emissions gradient flow")
     else:
         fig, axes = plt.subplots(1, 2, figsize=(28, 7.5))
         axes = list(axes)
@@ -711,8 +825,9 @@ def create_sankey_figure(
     sfx = "" if show_uncertainty else "_emissions_only"
     for fmt in ["pdf", "png"]:
         p = output_dir / f"fig_gradient_sankey{sfx}.{fmt}"
-        plt.savefig(p, bbox_inches="tight", dpi=300,
-                    facecolor="white", edgecolor="none")
+        plt.savefig(
+            p, bbox_inches="tight", dpi=300, facecolor="white", edgecolor="none"
+        )
         print(f"Saved: {p}")
     plt.close()
 

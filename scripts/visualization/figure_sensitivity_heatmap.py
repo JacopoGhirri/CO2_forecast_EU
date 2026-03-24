@@ -168,8 +168,8 @@ THEMATIC_ORDER = [
 ]
 
 THEMATIC_SEPARATORS_AFTER = {
-    "Heating oil price",       # after fuel prices
-    "Temperature (pop.)",      # after GDP + temperature
+    "Heating oil price",  # after fuel prices
+    "Temperature (pop.)",  # after GDP + temperature
 }
 
 
@@ -198,7 +198,7 @@ def setup_nature_style():
             "ytick.labelsize": 9,
             "legend.fontsize": 8,
             "figure.dpi": 300,
-            "pdf.fonttype": 42,   # TrueType — text remains editable in Illustrator
+            "pdf.fonttype": 42,  # TrueType — text remains editable in Illustrator
             "ps.fonttype": 42,
         }
     )
@@ -270,7 +270,7 @@ def get_separator_positions(ordered_vars: list) -> list:
         List of float x-positions where vertical separators should be drawn.
     """
     positions = []
-    for i, var in enumerate(ordered_vars[:-1]):   # skip the last variable
+    for i, var in enumerate(ordered_vars[:-1]):  # skip the last variable
         if var in THEMATIC_SEPARATORS_AFTER:
             positions.append(i + 0.5)
     return positions
@@ -319,20 +319,20 @@ def create_sobol_heatmap():
     df_sobol["var_clean"] = df_sobol["var"].map(NAME_MAP).fillna(df_sobol["var"])
 
     # Build pivot tables: rows = variables, columns = sectors
-    pivot_st   = df_sobol.pivot(index="var_clean", columns="sector", values="ST")
+    pivot_st = df_sobol.pivot(index="var_clean", columns="sector", values="ST")
     pivot_conf = df_sobol.pivot(index="var_clean", columns="sector", values="ST_conf")
 
     # Restrict to sectors in the specified display order
     available_sectors = [s for s in SECTOR_ORDER if s in pivot_st.columns]
-    pivot_st   = pivot_st[available_sectors]
+    pivot_st = pivot_st[available_sectors]
     pivot_conf = pivot_conf[available_sectors]
 
     # ── Variable selection and ordering ───────────────────────────────────
     print(f"\nSelecting top {TOP_N_PER_SECTOR} variables per sector...")
 
     selected_vars = select_variables_top_per_sector(pivot_st, TOP_N_PER_SECTOR)
-    ordered_vars  = order_variables_thematically(selected_vars)
-    n_vars    = len(ordered_vars)
+    ordered_vars = order_variables_thematically(selected_vars)
+    n_vars = len(ordered_vars)
     n_sectors = len(available_sectors)
 
     print(f"Selected {n_vars} variables across {n_sectors} sectors")
@@ -340,7 +340,7 @@ def create_sobol_heatmap():
         print(f"  {i + 1:2d}. {v}")
 
     # Filter and reorder pivot rows to match the thematic column order
-    pivot_st_plot   = pivot_st.loc[ordered_vars]
+    pivot_st_plot = pivot_st.loc[ordered_vars]
     pivot_conf_plot = pivot_conf.loc[ordered_vars]
 
     # ── Colormap ──────────────────────────────────────────────────────────
@@ -363,7 +363,7 @@ def create_sobol_heatmap():
     # Target a wide landscape figure suitable for a Nature two-column layout
     # (max 180 mm ≈ 7.09 in). Each variable column is ~0.38 in; each sector
     # row is ~0.45 in. Extra height accommodates the colorbar strip.
-    fig_width  = max(9.0, 0.38 * n_vars + 2.0)
+    fig_width = max(9.0, 0.38 * n_vars + 2.0)
     fig_height = max(3.2, 0.45 * n_sectors + 1.8)
 
     fig = plt.figure(figsize=(fig_width, fig_height))
@@ -371,18 +371,19 @@ def create_sobol_heatmap():
     # GridSpec: top row = colorbar, bottom row = heatmap.
     # The colorbar row is kept slim; heatmap takes the bulk of the height.
     gs = gridspec.GridSpec(
-        2, 1,
+        2,
+        1,
         height_ratios=[0.7, 10],
         hspace=0.10,
     )
 
-    ax_cbar    = fig.add_subplot(gs[0, 0])   # horizontal colorbar strip
-    ax_heatmap = fig.add_subplot(gs[1, 0])   # main heatmap
+    ax_cbar = fig.add_subplot(gs[0, 0])  # horizontal colorbar strip
+    ax_heatmap = fig.add_subplot(gs[1, 0])  # main heatmap
 
     # ── Heatmap data ──────────────────────────────────────────────────────
     # Transpose so rows = sectors (y-axis) and columns = variables (x-axis)
-    data_st   = pivot_st_plot.values.T      # shape: (n_sectors, n_vars)
-    data_conf = pivot_conf_plot.values.T    # shape: (n_sectors, n_vars)
+    data_st = pivot_st_plot.values.T  # shape: (n_sectors, n_vars)
+    data_conf = pivot_conf_plot.values.T  # shape: (n_sectors, n_vars)
 
     im = ax_heatmap.imshow(
         data_st,
@@ -398,7 +399,7 @@ def create_sobol_heatmap():
     # ST > 2 × confidence interval).
     for i in range(n_sectors):
         for j in range(n_vars):
-            val  = data_st[i, j]
+            val = data_st[i, j]
             conf = data_conf[i, j] if not np.isnan(data_conf[i, j]) else 0.0
 
             if np.isnan(val):
@@ -408,9 +409,11 @@ def create_sobol_heatmap():
             weight = "bold" if val > 0.10 and val > 2 * conf else "normal"
 
             ax_heatmap.text(
-                j, i,
+                j,
+                i,
                 f"{val:.2f}",
-                ha="center", va="center",
+                ha="center",
+                va="center",
                 fontsize=7.5,
                 color=text_color,
                 fontweight=weight,
@@ -427,7 +430,8 @@ def create_sobol_heatmap():
     ax_heatmap.set_xticks(range(n_vars))
     ax_heatmap.set_xticklabels(
         ordered_vars,
-        rotation=45, ha="right",
+        rotation=45,
+        ha="right",
         fontsize=8.5,
     )
 

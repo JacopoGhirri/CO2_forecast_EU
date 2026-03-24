@@ -95,9 +95,33 @@ FORECASTER_CONFIG_PATH = Path("config/models/latent_forecaster_config.yaml")
 OUTPUT_DIR = Path("outputs/tables")
 
 EU27_COUNTRIES = [
-    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI",
-    "FR", "DE", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
-    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+    "AT",
+    "BE",
+    "BG",
+    "HR",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "EL",
+    "FI",
+    "FR",
+    "DE",
+    "HU",
+    "IE",
+    "IT",
+    "LV",
+    "LT",
+    "LU",
+    "MT",
+    "NL",
+    "PL",
+    "PT",
+    "RO",
+    "SK",
+    "SI",
+    "ES",
+    "SE",
 ]
 
 EMISSION_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Power"]
@@ -106,6 +130,7 @@ EMISSION_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "
 # =============================================================================
 # Training helpers
 # =============================================================================
+
 
 def train_vae(dataset, vae_cfg, n_epochs: int) -> VAEModel:
     input_dim = len(dataset.input_variable_names)
@@ -142,8 +167,7 @@ def train_vae(dataset, vae_cfg, n_epochs: int) -> VAEModel:
     )
 
     train_ds, val_ds = torch.utils.data.random_split(
-        dataset, [0.85, 0.15],
-        generator=torch.Generator().manual_seed(SEED)
+        dataset, [0.85, 0.15], generator=torch.Generator().manual_seed(SEED)
     )
     loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -190,8 +214,11 @@ def train_vae(dataset, vae_cfg, n_epochs: int) -> VAEModel:
     return model
 
 
-def train_predictor(dataset, vae_model, pred_cfg, vae_cfg, n_epochs: int) -> FullPredictionModel:
+def train_predictor(
+    dataset, vae_model, pred_cfg, vae_cfg, n_epochs: int
+) -> FullPredictionModel:
     from scripts.elements.datasets import DatasetPrediction
+
     pred_dataset = DatasetPrediction.__new__(DatasetPrediction)
     pred_dataset.__dict__.update(dataset.__dict__)
     pred_dataset.__class__ = DatasetPrediction
@@ -229,8 +256,7 @@ def train_predictor(dataset, vae_model, pred_cfg, vae_cfg, n_epochs: int) -> Ful
     )
 
     train_ds, val_ds = torch.utils.data.random_split(
-        pred_dataset, [0.85, 0.15],
-        generator=torch.Generator().manual_seed(SEED)
+        pred_dataset, [0.85, 0.15], generator=torch.Generator().manual_seed(SEED)
     )
     loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -241,13 +267,13 @@ def train_predictor(dataset, vae_model, pred_cfg, vae_cfg, n_epochs: int) -> Ful
     for epoch in range(n_epochs):
         full_model.train()
         for batch in loader:
-            x_cur, c_cur, y_cur, x_prev, c_prev, y_prev = [
-                b.to(DEVICE) for b in batch
-            ]
+            x_cur, c_cur, y_cur, x_prev, c_prev, y_prev = [b.to(DEVICE) for b in batch]
             optimizer.zero_grad()
             delta_pred, unc, _, _, _, _, _, _ = full_model(x_cur, x_prev, c_cur, c_prev)
             delta_true = y_cur - y_prev
-            loss = uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=pred_cfg.mode_loss)
+            loss = uncertainty_aware_mse_loss(
+                delta_true, delta_pred, unc, mode=pred_cfg.mode_loss
+            )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(full_model.parameters(), 1.0)
             check_nan_gradients(full_model)
@@ -261,9 +287,13 @@ def train_predictor(dataset, vae_model, pred_cfg, vae_cfg, n_epochs: int) -> Ful
                 x_cur, c_cur, y_cur, x_prev, c_prev, y_prev = [
                     b.to(DEVICE) for b in batch
                 ]
-                delta_pred, unc, _, _, _, _, _, _ = full_model(x_cur, x_prev, c_cur, c_prev)
+                delta_pred, unc, _, _, _, _, _, _ = full_model(
+                    x_cur, x_prev, c_cur, c_prev
+                )
                 delta_true = y_cur - y_prev
-                loss = uncertainty_aware_mse_loss(delta_true, delta_pred, unc, mode=pred_cfg.mode_loss)
+                loss = uncertainty_aware_mse_loss(
+                    delta_true, delta_pred, unc, mode=pred_cfg.mode_loss
+                )
                 val_losses.append(loss.item())
 
         loss_history.append(np.mean(val_losses))
@@ -279,7 +309,9 @@ def train_predictor(dataset, vae_model, pred_cfg, vae_cfg, n_epochs: int) -> Ful
     return full_model
 
 
-def train_forecaster(dataset, vae_model, fcast_cfg, vae_cfg, n_epochs: int) -> FullLatentForecastingModel:
+def train_forecaster(
+    dataset, vae_model, fcast_cfg, vae_cfg, n_epochs: int
+) -> FullLatentForecastingModel:
     fcast_dataset = DatasetForecasting(dataset)
 
     context_dim = len(dataset.context_variable_names)
@@ -330,9 +362,7 @@ def train_forecaster(dataset, vae_model, fcast_cfg, vae_cfg, n_epochs: int) -> F
     for epoch in range(n_epochs):
         full_model.train()
         for batch in loader:
-            x_cur, c_cur, x_prev, c_prev, x_past, c_past = [
-                b.to(DEVICE) for b in batch
-            ]
+            x_cur, c_cur, x_prev, c_prev, x_past, c_past = [b.to(DEVICE) for b in batch]
             optimizer.zero_grad()
             z_forecast = full_model(x_prev, x_past, c_cur, c_prev)
             mean_target, log_var_target = full_model.encoder(x_cur)
@@ -370,6 +400,7 @@ def train_forecaster(dataset, vae_model, fcast_cfg, vae_cfg, n_epochs: int) -> F
 # =============================================================================
 # Evaluation
 # =============================================================================
+
 
 def evaluate_projections(
     cutoff_year: int,
@@ -433,9 +464,7 @@ def evaluate_projections(
                 mean_cur = full_fcast_model.forecaster(
                     mean_prev, mean_past, c_cur, c_prev
                 )
-                latent_cur = reparameterize(
-                    mean_cur, torch.exp(0.5 * avg_log_var)
-                )
+                latent_cur = reparameterize(mean_cur, torch.exp(0.5 * avg_log_var))
                 latent_prev_sample = reparameterize(
                     mean_prev, torch.exp(0.5 * avg_log_var)
                 )
@@ -454,18 +483,20 @@ def evaluate_projections(
                 residuals = (emissions_cur - y_obs).squeeze(0).cpu().numpy()
 
                 for s_idx, sector in enumerate(EMISSION_SECTORS):
-                    results.append({
-                        "cutoff_year": cutoff_year,
-                        "country": country,
-                        "target_year": target_year,
-                        "horizon": horizon,
-                        "sector": sector,
-                        "predicted": float(emissions_cur[0, s_idx].cpu()),
-                        "observed": float(y_obs[0, s_idx].cpu()),
-                        "residual": float(residuals[s_idx]),
-                        "abs_error": float(abs(residuals[s_idx])),
-                        "sq_error": float(residuals[s_idx]**2),
-                    })
+                    results.append(
+                        {
+                            "cutoff_year": cutoff_year,
+                            "country": country,
+                            "target_year": target_year,
+                            "horizon": horizon,
+                            "sector": sector,
+                            "predicted": float(emissions_cur[0, s_idx].cpu()),
+                            "observed": float(y_obs[0, s_idx].cpu()),
+                            "residual": float(residuals[s_idx]),
+                            "abs_error": float(abs(residuals[s_idx])),
+                            "sq_error": float(residuals[s_idx] ** 2),
+                        }
+                    )
 
                 # Update chain
                 mean_past = mean_prev
@@ -479,6 +510,7 @@ def evaluate_projections(
 # Summary tables
 # =============================================================================
 
+
 def build_summary_tables(results_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build two summary tables:
@@ -487,8 +519,7 @@ def build_summary_tables(results_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
     """
     # Table 1: cutoff x horizon
     agg = (
-        results_df
-        .groupby(["cutoff_year", "horizon"])
+        results_df.groupby(["cutoff_year", "horizon"])
         .agg(
             MSE=("sq_error", "mean"),
             MAE=("abs_error", "mean"),
@@ -507,8 +538,7 @@ def build_summary_tables(results_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
 
     # Table 2: sector x horizon (averaged across cutoffs)
     sector_agg = (
-        results_df
-        .groupby(["sector", "horizon"])
+        results_df.groupby(["sector", "horizon"])
         .agg(MSE=("sq_error", "mean"), MAE=("abs_error", "mean"))
         .reset_index()
     )
@@ -524,6 +554,7 @@ def build_summary_tables(results_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
 # =============================================================================
 # Main
 # =============================================================================
+
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -564,7 +595,7 @@ def main():
         print(f"\n{'=' * 60}")
         print(f"CUTOFF YEAR: {cutoff_year}")
         print(f"  Training on {DATA_START_YEAR}–{cutoff_year}")
-        print(f"  Evaluating on {cutoff_year+1}–{cutoff_year+MAX_HORIZON}")
+        print(f"  Evaluating on {cutoff_year + 1}–{cutoff_year + MAX_HORIZON}")
         print("=" * 60)
 
         torch.manual_seed(SEED)
@@ -650,4 +681,5 @@ def main():
 
 if __name__ == "__main__":
     import numpy as np
+
     main()

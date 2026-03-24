@@ -354,6 +354,7 @@ def build_sector_data(historical, forecast_summary):
 # Calibrated boxplot data builders
 # =============================================================================
 
+
 def build_mc_2030_country_calibrated(
     df_mc,
     temperatures,
@@ -374,20 +375,20 @@ def build_mc_2030_country_calibrated(
             else:
                 # Sum calibrated sector columns — total_CO2 is never updated
                 # by apply_calibration_to_mc so must not be used here
-                row[c] = sum(
-                    cd[f"{s}_total"].values[0] for s in OUTPUT_SECTORS
-                ) / 1e9
+                row[c] = sum(cd[f"{s}_total"].values[0] for s in OUTPUT_SECTORS) / 1e9
 
         row["East Europe"] = (
-            mc_slice[mc_slice["geo"].isin(EAST_EUROPE)]
-            [[f"{s}_total" for s in OUTPUT_SECTORS]]
+            mc_slice[mc_slice["geo"].isin(EAST_EUROPE)][
+                [f"{s}_total" for s in OUTPUT_SECTORS]
+            ]
             .sum()
             .sum()
             / 1e9
         )
         row["West Europe"] = (
-            mc_slice[mc_slice["geo"].isin(WEST_EUROPE)]
-            [[f"{s}_total" for s in OUTPUT_SECTORS]]
+            mc_slice[mc_slice["geo"].isin(WEST_EUROPE)][
+                [f"{s}_total" for s in OUTPUT_SECTORS]
+            ]
             .sum()
             .sum()
             / 1e9

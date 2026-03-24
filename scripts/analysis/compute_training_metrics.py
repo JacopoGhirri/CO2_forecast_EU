@@ -28,7 +28,11 @@ import torch
 from torch.utils.data import DataLoader
 
 from config.data.output_configs import output_configs
-from scripts.elements.datasets import DatasetForecasting, DatasetPrediction, DatasetUnified
+from scripts.elements.datasets import (
+    DatasetForecasting,
+    DatasetPrediction,
+    DatasetUnified,
+)
 from scripts.elements.models import (
     Decoder,
     EmissionPredictor,
@@ -67,9 +71,33 @@ VARIABLE_FILE = Path("config/data/variable_selection.txt")
 OUTPUT_DIR = Path("outputs/tables")
 
 EU27_COUNTRIES = [
-    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI",
-    "FR", "DE", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
-    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+    "AT",
+    "BE",
+    "BG",
+    "HR",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "EL",
+    "FI",
+    "FR",
+    "DE",
+    "HU",
+    "IE",
+    "IT",
+    "LV",
+    "LT",
+    "LU",
+    "MT",
+    "NL",
+    "PL",
+    "PT",
+    "RO",
+    "SK",
+    "SI",
+    "ES",
+    "SE",
 ]
 
 EMISSION_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Power"]
@@ -78,6 +106,7 @@ EMISSION_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "
 # =============================================================================
 # Model loading
 # =============================================================================
+
 
 def load_all_models(dataset):
     vae_cfg = load_config(VAE_CONFIG_PATH)
@@ -151,6 +180,7 @@ def load_all_models(dataset):
 # VAE metrics
 # =============================================================================
 
+
 def compute_vae_metrics(vae_model, dataset):
     """
     Reconstruction loss, KL divergence, and latent space statistics
@@ -202,8 +232,9 @@ def compute_vae_metrics(vae_model, dataset):
                 np.sum(
                     np.mean(
                         -0.5 * (1 + all_log_vars - all_means**2 - np.exp(all_log_vars)),
-                        axis=0
-                    ) > 0.1
+                        axis=0,
+                    )
+                    > 0.1
                 )
             ),
         }
@@ -219,6 +250,7 @@ def compute_vae_metrics(vae_model, dataset):
 # Predictor metrics
 # =============================================================================
 
+
 def compute_predictor_metrics(full_pred_model, dataset):
     """
     Emission-space MSE, MAE, and R² on train and validation splits,
@@ -231,6 +263,7 @@ def compute_predictor_metrics(full_pred_model, dataset):
 
     # Use DatasetPrediction so we get emissions_prev
     from scripts.elements.datasets import DatasetPrediction
+
     pred_dataset = DatasetPrediction.__new__(DatasetPrediction)
     pred_dataset.__dict__.update(dataset.__dict__)
     pred_dataset.__class__ = DatasetPrediction
@@ -253,13 +286,23 @@ def compute_predictor_metrics(full_pred_model, dataset):
         with torch.inference_mode():
             for batch in loader:
                 (
-                    x_cur, c_cur, y_cur,
-                    x_prev, c_prev, y_prev,
+                    x_cur,
+                    c_cur,
+                    y_cur,
+                    x_prev,
+                    c_prev,
+                    y_prev,
                 ) = [b.to(DEVICE) for b in batch]
 
                 (
-                    delta_pred, _,
-                    _, _, _, _, _, _,
+                    delta_pred,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
                 ) = full_pred_model(x_cur, x_prev, c_cur, c_prev)
 
                 y_pred = delta_pred + y_prev
@@ -271,7 +314,7 @@ def compute_predictor_metrics(full_pred_model, dataset):
 
         residuals = all_pred - all_true
         ss_res = np.sum(residuals**2, axis=0)
-        ss_tot = np.sum((all_true - all_true.mean(axis=0))**2, axis=0)
+        ss_tot = np.sum((all_true - all_true.mean(axis=0)) ** 2, axis=0)
 
         # Aggregate metrics
         results[split_name] = {
@@ -286,8 +329,8 @@ def compute_predictor_metrics(full_pred_model, dataset):
         for i, sector in enumerate(EMISSION_SECTORS):
             r2 = float(1 - ss_res[i] / ss_tot[i]) if ss_tot[i] > 0 else float("nan")
             per_sector_results[split_name][sector] = {
-                "MSE": float(np.mean(residuals[:, i]**2)),
-                "RMSE": float(np.sqrt(np.mean(residuals[:, i]**2))),
+                "MSE": float(np.mean(residuals[:, i] ** 2)),
+                "RMSE": float(np.sqrt(np.mean(residuals[:, i] ** 2))),
                 "MAE": float(np.mean(np.abs(residuals[:, i]))),
                 "R2": r2,
             }
@@ -298,7 +341,10 @@ def compute_predictor_metrics(full_pred_model, dataset):
 
         print(f"\n  [{split_name}] Per sector")
         for sector, metrics in per_sector_results[split_name].items():
-            print(f"    {sector:<18s}: " + "  ".join(f"{k}={v:.4f}" for k, v in metrics.items()))
+            print(
+                f"    {sector:<18s}: "
+                + "  ".join(f"{k}={v:.4f}" for k, v in metrics.items())
+            )
 
     return results, per_sector_results
 
@@ -306,6 +352,7 @@ def compute_predictor_metrics(full_pred_model, dataset):
 # =============================================================================
 # Forecaster metrics
 # =============================================================================
+
 
 def compute_forecaster_metrics(full_fcast_model, dataset):
     """
@@ -339,9 +386,12 @@ def compute_forecaster_metrics(full_fcast_model, dataset):
         with torch.inference_mode():
             for batch in loader:
                 (
-                    x_cur, c_cur,
-                    x_prev, c_prev,
-                    x_past, c_past,
+                    x_cur,
+                    c_cur,
+                    x_prev,
+                    c_prev,
+                    x_past,
+                    c_past,
                 ) = [b.to(DEVICE) for b in batch]
 
                 # Target: encoder mean of the current year
@@ -371,6 +421,7 @@ def compute_forecaster_metrics(full_fcast_model, dataset):
 # Save to CSV
 # =============================================================================
 
+
 def save_summary_tables(vae_results, pred_results, pred_per_sector, fcast_results):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -379,11 +430,27 @@ def save_summary_tables(vae_results, pred_results, pred_per_sector, fcast_result
 
     for split in ["train", "val"]:
         for k, v in vae_results[split].items():
-            rows.append({"model": "VAE", "split": split, "metric": k, "value": round(v, 6)})
+            rows.append(
+                {"model": "VAE", "split": split, "metric": k, "value": round(v, 6)}
+            )
         for k, v in pred_results[split].items():
-            rows.append({"model": "Predictor", "split": split, "metric": k, "value": round(v, 6)})
+            rows.append(
+                {
+                    "model": "Predictor",
+                    "split": split,
+                    "metric": k,
+                    "value": round(v, 6),
+                }
+            )
         for k, v in fcast_results[split].items():
-            rows.append({"model": "Forecaster", "split": split, "metric": k, "value": round(v, 6)})
+            rows.append(
+                {
+                    "model": "Forecaster",
+                    "split": split,
+                    "metric": k,
+                    "value": round(v, 6),
+                }
+            )
 
     summary_df = pd.DataFrame(rows)
     summary_path = OUTPUT_DIR / "SI_training_metrics.csv"
@@ -395,12 +462,14 @@ def save_summary_tables(vae_results, pred_results, pred_per_sector, fcast_result
     for split in ["train", "val"]:
         for sector, metrics in pred_per_sector[split].items():
             for k, v in metrics.items():
-                sector_rows.append({
-                    "split": split,
-                    "sector": sector,
-                    "metric": k,
-                    "value": round(v, 6),
-                })
+                sector_rows.append(
+                    {
+                        "split": split,
+                        "sector": sector,
+                        "metric": k,
+                        "value": round(v, 6),
+                    }
+                )
 
     sector_df = pd.DataFrame(sector_rows)
     sector_path = OUTPUT_DIR / "SI_training_metrics_per_sector.csv"
@@ -430,6 +499,7 @@ def save_summary_tables(vae_results, pred_results, pred_per_sector, fcast_result
 # =============================================================================
 # Main
 # =============================================================================
+
 
 def main():
     print("=" * 60)

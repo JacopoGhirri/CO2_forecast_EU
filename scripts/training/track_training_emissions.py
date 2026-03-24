@@ -23,14 +23,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 STAGES = {
-    "vae":        ("scripts.training.train_vae",        5000),
-    "predictor":  ("scripts.training.train_predictor",  5000),
+    "vae": ("scripts.training.train_vae", 5000),
+    "predictor": ("scripts.training.train_predictor", 5000),
     "forecaster": ("scripts.training.train_forecaster", 5001),
 }
 
 LABELS = {
-    "vae":        "VAE",
-    "predictor":  "Emission Predictor",
+    "vae": "VAE",
+    "predictor": "Emission Predictor",
     "forecaster": "Latent Forecaster",
 }
 
@@ -57,10 +57,10 @@ def run_stage(stage: str) -> None:
     finally:
         tracker.stop()
 
-    energy_wh  = tracker.final_emissions_data.energy_consumed * 1000
-    co2_g      = tracker.final_emissions_data.emissions * 1000
-    wh_epoch   = energy_wh / n_epochs
-    co2_epoch  = co2_g / n_epochs
+    energy_wh = tracker.final_emissions_data.energy_consumed * 1000
+    co2_g = tracker.final_emissions_data.emissions * 1000
+    wh_epoch = energy_wh / n_epochs
+    co2_epoch = co2_g / n_epochs
 
     print(f"\n{label} ({n_epochs:,} epochs)")
     print(f"  Energy : {energy_wh:.2f} Wh  ({wh_epoch * 1000:.2f} mWh/epoch)")
