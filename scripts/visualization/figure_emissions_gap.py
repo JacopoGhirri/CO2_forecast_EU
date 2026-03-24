@@ -421,11 +421,11 @@ def create_figure(df, ff55_pct, ff55_mt):
         ax.axhline(target, color="black", linestyle="--", linewidth=1.4, zorder=4)
         ax.text(
             len(src_keys) - 0.4,
-            target + (1.5 if key_suffix == "pct" else 15),
+            target - (1.5 if key_suffix == "pct" else 15),
             "FF55 target",
             fontsize=14,
             ha="right",
-            va="bottom",
+            va="top",
             color="black",
             fontstyle="italic",
         )
@@ -458,9 +458,7 @@ def create_figure(df, ff55_pct, ff55_mt):
     x_c = np.arange(n_c)
     ax_c.set_yscale("symlog", linthresh=5)
     ax_c.yaxis.set_major_formatter(
-        ticker.FuncFormatter(
-            lambda x, _: "" if x == 0 else f"{x:g}"
-        )
+        ticker.FuncFormatter(lambda x, _: "" if x == 0 else f"{x:g}")
     )
 
     y_all = []
@@ -557,7 +555,7 @@ def create_figure(df, ff55_pct, ff55_mt):
     leg = ax_c.legend(
         handles=handles,
         loc="upper right",
-        #bbox_to_anchor=(1.00, 0.5),
+        # bbox_to_anchor=(1.00, 0.5),
         frameon=True,
         framealpha=0.95,
         edgecolor="#bdc3c7",
@@ -646,17 +644,26 @@ def main():
     print(f"  FF55 target (Mt, absolute): {ff55_mt_abs:.1f} Mt CO2")
     print(f"  FF55 required % vs 2024   : {ff55_pct:+.1f}%")
     print(f"  Gap vs FF55 (pp)          : {gap_pct:+.1f} pp")
-    print(f"  Gap vs FF55 (Mt)          : {gap_mt:+.1f} Mt CO2")
+    print(f"  Gap vs FF55 (Mt)          : {gap_mt:+.1f} Mt CO2\n")
 
     # Comparison with other sources (EU27 only)
-    oecd_bau_pct = eu_row.get("oecd_bau1_pct", float("nan"))
-    eea_wam_pct = eu_row.get("eea_wam_pct", float("nan"))
-    print(
-        f"\n  OECD BAU % gap vs FF55    : {oecd_bau_pct - ff55_pct:+.1f} pp  (OECD BAU: {oecd_bau_pct:+.1f}%)"
-    )
-    print(
-        f"  EEA WAM % gap vs FF55     : {eea_wam_pct - ff55_pct:+.1f} pp  (EEA WAM:  {eea_wam_pct:+.1f}%)"
-    )
+    alt_scenarios = [
+        ("oecd_bau1", "OECD BAU"),
+        ("oecd_et1", "OECD Energy Transition"),
+        ("eea_wem", "EEA WEM"),
+        ("eea_wam", "EEA WAM"),
+        ("pypsa_base", "PyPSA Baseline"),
+        ("pypsa_ff55", "PyPSA Fit for 55"),
+    ]
+    for key, label in alt_scenarios:
+        scen_pct = eu_row.get(f"{key}_pct", float("nan"))
+        if not np.isnan(scen_pct):
+            gap = scen_pct - ff55_pct
+            print(
+                f"  {label:<28s} % gap vs FF55: {gap:+.1f} pp  ({label}: {scen_pct:+.1f}%)"
+            )
+        else:
+            print(f"  {label:<28s} % gap vs FF55: N/A")
 
     # Country-level distribution (panel c)
     countries_only = df[df["geo"] != "EU27"].dropna(subset=["mc_pct"])
