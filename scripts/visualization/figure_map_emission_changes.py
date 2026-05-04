@@ -34,6 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
@@ -47,11 +48,11 @@ import geopandas as gpd
 # Paths
 # =============================================================================
 
-MC_PROJECTIONS_PATH  = Path("data/projections/mc_projections.csv")
+MC_PROJECTIONS_PATH = Path("data/projections/mc_projections.csv")
 POPULATION_HIST_PATH = Path("data/full_timeseries/population.csv")
 POPULATION_PROJ_PATH = Path("data/full_timeseries/projections/population.csv")
-DATASET_PATH         = Path("data/pytorch_datasets/unified_dataset.pkl")
-OUTPUT_DIR           = Path("outputs/figures/supplementary")
+DATASET_PATH = Path("data/pytorch_datasets/unified_dataset.pkl")
+OUTPUT_DIR = Path("outputs/figures/supplementary")
 
 # =============================================================================
 # Constants
@@ -61,72 +62,123 @@ OUTPUT_SECTORS = ["HeatingCooling", "Industry", "Land", "Mobility", "Other", "Po
 
 SECTOR_LABELS = {
     "HeatingCooling": "Heating & Cooling",
-    "Industry":       "Industry",
-    "Land":           "Land Use",
-    "Mobility":       "Mobility",
-    "Other":          "Other",
-    "Power":          "Power",
+    "Industry": "Industry",
+    "Land": "Land Use",
+    "Mobility": "Mobility",
+    "Other": "Other",
+    "Power": "Power",
 }
 
 EU27_COUNTRIES = [
-    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI",
-    "FR", "DE", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
-    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+    "AT",
+    "BE",
+    "BG",
+    "HR",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "EL",
+    "FI",
+    "FR",
+    "DE",
+    "HU",
+    "IE",
+    "IT",
+    "LV",
+    "LT",
+    "LU",
+    "MT",
+    "NL",
+    "PL",
+    "PT",
+    "RO",
+    "SK",
+    "SI",
+    "ES",
+    "SE",
 ]
 
 ISO2_TO_ISO3 = {
-    "AT": "AUT", "BE": "BEL", "BG": "BGR", "HR": "HRV", "CY": "CYP",
-    "CZ": "CZE", "DK": "DNK", "EE": "EST", "EL": "GRC", "FI": "FIN",
-    "FR": "FRA", "DE": "DEU", "HU": "HUN", "IE": "IRL", "IT": "ITA",
-    "LV": "LVA", "LT": "LTU", "LU": "LUX", "MT": "MLT", "NL": "NLD",
-    "PL": "POL", "PT": "PRT", "RO": "ROU", "SK": "SVK", "SI": "SVN",
-    "ES": "ESP", "SE": "SWE",
+    "AT": "AUT",
+    "BE": "BEL",
+    "BG": "BGR",
+    "HR": "HRV",
+    "CY": "CYP",
+    "CZ": "CZE",
+    "DK": "DNK",
+    "EE": "EST",
+    "EL": "GRC",
+    "FI": "FIN",
+    "FR": "FRA",
+    "DE": "DEU",
+    "HU": "HUN",
+    "IE": "IRL",
+    "IT": "ITA",
+    "LV": "LVA",
+    "LT": "LTU",
+    "LU": "LUX",
+    "MT": "MLT",
+    "NL": "NLD",
+    "PL": "POL",
+    "PT": "PRT",
+    "RO": "ROU",
+    "SK": "SVK",
+    "SI": "SVN",
+    "ES": "ESP",
+    "SE": "SWE",
 }
 
 XLIM = (-25, 35)
 YLIM = (34, 72)
 
-GEO_FACECOLOR  = "#e8e8e8"
-GEO_EDGECOLOR  = "#aaaaaa"
-GEO_LINEWIDTH  = 0.3
-OCEAN_COLOR    = "white"
+GEO_FACECOLOR = "#e8e8e8"
+GEO_EDGECOLOR = "#aaaaaa"
+GEO_LINEWIDTH = 0.3
+OCEAN_COLOR = "white"
 
-CMAP_NAME      = "RdBu_r"
+CMAP_NAME = "RdBu_r"
 DOT_EDGE_COLOR = "#333333"
 DOT_EDGE_WIDTH = 0.3
-DOT_ALPHA      = 0.88
+DOT_ALPHA = 0.88
 
 # Dot size range: scatter s parameter (marker area in points^2)
 # Linear scaling of per-capita values
 MAX_DOT_PT = 40.0
-MIN_DOT_PT =  1.5
+MIN_DOT_PT = 1.5
 
 FONT_PANEL_LETTER = 8
-FONT_TITLE        = 7
-FONT_CBAR_LABEL   = 6
-FONT_CBAR_TICK    = 5
+FONT_TITLE = 7
+FONT_CBAR_LABEL = 6
+FONT_CBAR_TICK = 5
 FONT_LEGEND_TITLE = 5.5
-FONT_LEGEND_VAL   = 5.0
+FONT_LEGEND_VAL = 5.0
 
-plt.rcParams.update({
-    "font.family":     "sans-serif",
-    "font.sans-serif": ["Arial", "Helvetica Neue", "DejaVu Sans"],
-    "font.size":       6,
-    "axes.linewidth":  0.5,
-    "pdf.fonttype":    42,
-    "ps.fonttype":     42,
-})
+plt.rcParams.update(
+    {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica Neue", "DejaVu Sans"],
+        "font.size": 6,
+        "axes.linewidth": 0.5,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    }
+)
 
 
 # =============================================================================
 # Data loading
 # =============================================================================
 
+
 def load_population() -> pd.DataFrame:
-    pop = pd.concat([
-        pd.read_csv(POPULATION_HIST_PATH),
-        pd.read_csv(POPULATION_PROJ_PATH),
-    ], ignore_index=True)
+    pop = pd.concat(
+        [
+            pd.read_csv(POPULATION_HIST_PATH),
+            pd.read_csv(POPULATION_PROJ_PATH),
+        ],
+        ignore_index=True,
+    )
     pop["population"] = pop["population:POP_NC"].astype(float)
     return (
         pop[["geo", "year", "population"]]
@@ -146,7 +198,7 @@ def compute_pct_and_percap(dataset, population_df: pd.DataFrame):
     df_mc["geo"] = df_mc["geo"].astype(str)
 
     for s in OUTPUT_SECTORS:
-        m  = dataset.precomputed_scaling_params[s]["mean"]
+        m = dataset.precomputed_scaling_params[s]["mean"]
         sd = dataset.precomputed_scaling_params[s]["std"]
         df_mc[f"{s}_phys"] = (df_mc[f"emissions_{s}"] * sd + m).clip(lower=0)
 
@@ -171,7 +223,7 @@ def compute_pct_and_percap(dataset, population_df: pd.DataFrame):
     merged = agg_year(2024).merge(agg_year(2030), on="geo")
     merged = merged[merged["geo"].isin(EU27_COUNTRIES)]
 
-    pct    = pd.DataFrame({"geo": merged["geo"]})
+    pct = pd.DataFrame({"geo": merged["geo"]})
     percap = pd.DataFrame({"geo": merged["geo"]})
 
     for col in ["total"] + OUTPUT_SECTORS:
@@ -182,9 +234,9 @@ def compute_pct_and_percap(dataset, population_df: pd.DataFrame):
     # Per-capita: kg CO2/person = total_CO2 (kg*person ... wait,
     # total_CO2 = phys_kg_per_person * population, so divide back out)
     pop_2024 = merged["population_2024"]
-    percap["total"] = merged["total_2024"] / pop_2024          # kg CO2/person
+    percap["total"] = merged["total_2024"] / pop_2024  # kg CO2/person
     for s in OUTPUT_SECTORS:
-        percap[s] = merged[f"{s}_2024"] / pop_2024             # kg CO2/person
+        percap[s] = merged[f"{s}_2024"] / pop_2024  # kg CO2/person
 
     return pct, percap
 
@@ -193,7 +245,7 @@ def load_eu_geodataframe() -> gpd.GeoDataFrame:
     import io, urllib.request, zipfile
     from shapely.geometry import Point
 
-    cache_dir  = Path("data/geodata")
+    cache_dir = Path("data/geodata")
     cache_path = cache_dir / "ne_110m_admin_0_countries.shp"
 
     if not cache_path.exists():
@@ -208,7 +260,7 @@ def load_eu_geodataframe() -> gpd.GeoDataFrame:
         with zipfile.ZipFile(zip_data) as z:
             z.extractall(cache_dir)
 
-    world        = gpd.read_file(cache_path)
+    world = gpd.read_file(cache_path)
     iso3_to_iso2 = {v: k for k, v in ISO2_TO_ISO3.items()}
 
     iso_col = None
@@ -242,7 +294,7 @@ def load_eu_geodataframe() -> gpd.GeoDataFrame:
 
     pts = eu.geometry.representative_point()
     eu["dot_x"] = pts.x
-    eu["dot_y"]  = pts.y
+    eu["dot_y"] = pts.y
     print(f"  Loaded {len(eu)} EU27 geometries")
     return eu
 
@@ -250,6 +302,7 @@ def load_eu_geodataframe() -> gpd.GeoDataFrame:
 # =============================================================================
 # Dot sizing — LINEAR scale on per-capita values
 # =============================================================================
+
 
 def linear_areas(vals: pd.Series, ref_vals: pd.Series | None = None) -> pd.Series:
     """
@@ -290,6 +343,7 @@ def _val_to_area_linear(v: float, ref_vals: pd.Series) -> float:
 # Per-panel dot-size legend  (values in kg CO2/person)
 # =============================================================================
 
+
 def _nice_legend_values_linear(percap_vals: pd.Series) -> list[float]:
     """
     Return [min, arithmetic_mid, max] of the per-capita distribution,
@@ -319,7 +373,7 @@ def draw_dot_legend_axes(fig, percap_vals: pd.Series, legend_rect: list):
     if percap_vals.dropna().empty or percap_vals.max() <= 0:
         return
 
-    ref_vals  = _nice_legend_values_linear(percap_vals)
+    ref_vals = _nice_legend_values_linear(percap_vals)
     ref_areas = [_val_to_area_linear(v, percap_vals) for v in ref_vals]
 
     ax = fig.add_axes(legend_rect)
@@ -327,45 +381,61 @@ def draw_dot_legend_axes(fig, percap_vals: pd.Series, legend_rect: list):
     ax.set_ylim(*YLIM)
     ax.axis("off")
 
-    map_w  = XLIM[1] - XLIM[0]
-    map_h  = YLIM[1] - YLIM[0]
-    y_circ  = YLIM[0] + map_h * 0.55
+    map_w = XLIM[1] - XLIM[0]
+    map_h = YLIM[1] - YLIM[0]
+    y_circ = YLIM[0] + map_h * 0.55
     y_label = YLIM[0] + map_h * 0.15
     y_title = YLIM[0] + map_h * 0.88
-    n  = len(ref_vals)
+    n = len(ref_vals)
     xs = [XLIM[0] + map_w * (0.15 + i * 0.35) for i in range(n)]
 
     ax.text(
-        XLIM[0] + map_w * 0.5, y_title,
+        XLIM[0] + map_w * 0.5,
+        y_title,
         "2024 emissions (tCO2/hab)",
-        ha="center", va="center",
-        fontsize=FONT_LEGEND_TITLE, color="#444444", style="italic",
+        ha="center",
+        va="center",
+        fontsize=FONT_LEGEND_TITLE,
+        color="#444444",
+        style="italic",
     )
     ax.scatter(
-        xs, [y_circ] * n,
+        xs,
+        [y_circ] * n,
         s=ref_areas,
         facecolors="#cccccc",
         edgecolors=DOT_EDGE_COLOR,
         linewidths=DOT_EDGE_WIDTH * 1.5,
-        alpha=0.92, zorder=3, clip_on=False,
+        alpha=0.92,
+        zorder=3,
+        clip_on=False,
     )
     for x, val in zip(xs, ref_vals):
         # Format: show as integer kg if ≥ 10, one decimal if < 10
         label = (
-            f"{val/1e3:.0f}" if val/1e3 >= 10
-            else (f"{val/1e3:.1f}" if val/1e3 >= 0.1 else f"{val/1e3:.2f}")
+            f"{val / 1e3:.0f}"
+            if val / 1e3 >= 10
+            else (f"{val / 1e3:.1f}" if val / 1e3 >= 0.1 else f"{val / 1e3:.2f}")
         )
-        ax.text(x, y_label, label, ha="center", va="center",
-                fontsize=FONT_LEGEND_VAL, color="#333333")
+        ax.text(
+            x,
+            y_label,
+            label,
+            ha="center",
+            va="center",
+            fontsize=FONT_LEGEND_VAL,
+            color="#333333",
+        )
 
 
 # =============================================================================
 # Colormap helpers  (unchanged from v3)
 # =============================================================================
 
+
 def symmetric_vmax(values: pd.Series, pad: float = 1.05, minimum: float = 5.0) -> float:
     clean = values.dropna()
-    vmax  = max(abs(float(clean.min())), abs(float(clean.max())))
+    vmax = max(abs(float(clean.min())), abs(float(clean.max())))
     return max(vmax * pad, minimum)
 
 
@@ -388,6 +458,7 @@ def truncated_cmap(cmap, vmax: float, cbar_min: float, cbar_max: float):
 # Drawing
 # =============================================================================
 
+
 def draw_panel(
     ax,
     gdf: gpd.GeoDataFrame,
@@ -408,13 +479,14 @@ def draw_panel(
             linewidth=GEO_LINEWIDTH,
         )
 
-    valid      = gdf[gdf[percap_col].notna() & gdf[pct_col].notna()].copy()
+    valid = gdf[gdf[percap_col].notna() & gdf[pct_col].notna()].copy()
     ref_series = gdf[percap_col].dropna()
-    areas      = linear_areas(valid[percap_col], ref_vals=ref_series)
-    colors     = [cmap(norm(v)) for v in valid[pct_col]]
+    areas = linear_areas(valid[percap_col], ref_vals=ref_series)
+    colors = [cmap(norm(v)) for v in valid[pct_col]]
 
     ax.scatter(
-        valid["dot_x"], valid["dot_y"],
+        valid["dot_x"],
+        valid["dot_y"],
         s=areas,
         c=colors,
         edgecolors=DOT_EDGE_COLOR,
@@ -428,17 +500,21 @@ def draw_panel(
     ax.axis("off")
     ax.set_title(title, fontsize=FONT_TITLE, fontweight="regular", pad=3, loc="center")
     ax.text(
-        -0.02, 1.02, letter,
+        -0.02,
+        1.02,
+        letter,
         transform=ax.transAxes,
-        fontsize=FONT_PANEL_LETTER, fontweight="bold",
-        va="bottom", ha="left",
+        fontsize=FONT_PANEL_LETTER,
+        fontweight="bold",
+        va="bottom",
+        ha="left",
     )
 
 
 def draw_colorbar(cax, fig, cmap_full, vmax, cbar_min, cbar_max, ticks, label):
     cmap_trunc = truncated_cmap(cmap_full, vmax, cbar_min, cbar_max)
-    norm_cbar  = mcolors.Normalize(vmin=cbar_min, vmax=cbar_max)
-    sm         = cm.ScalarMappable(cmap=cmap_trunc, norm=norm_cbar)
+    norm_cbar = mcolors.Normalize(vmin=cbar_min, vmax=cbar_max)
+    sm = cm.ScalarMappable(cmap=cmap_trunc, norm=norm_cbar)
     sm.set_array(np.linspace(cbar_min, cbar_max, 512))
 
     tick_labels = ["0%" if t == 0 else f"{t:+d}%" for t in ticks]
@@ -456,12 +532,12 @@ def draw_colorbar(cax, fig, cmap_full, vmax, cbar_min, cbar_max, ticks, label):
 # Figure assembly
 # =============================================================================
 
+
 def create_map_figure(
     pct_df: pd.DataFrame,
     percap_df: pd.DataFrame,
     eu_gdf: gpd.GeoDataFrame,
 ) -> None:
-
     eu_gdf = eu_gdf.merge(pct_df, left_on="iso2", right_on="geo", how="left")
     percap_renamed = percap_df.rename(
         columns={c: f"{c}_percap" for c in percap_df.columns if c != "geo"}
@@ -471,65 +547,84 @@ def create_map_figure(
     cmap = plt.get_cmap(CMAP_NAME)
 
     vmax_total = symmetric_vmax(pct_df["total"])
-    vmaxes     = [symmetric_vmax(pct_df[s]) for s in OUTPUT_SECTORS]
+    vmaxes = [symmetric_vmax(pct_df[s]) for s in OUTPUT_SECTORS]
     norm_total = mcolors.Normalize(vmin=-vmax_total, vmax=vmax_total)
-    norms      = [mcolors.Normalize(vmin=-v, vmax=v) for v in vmaxes]
+    norms = [mcolors.Normalize(vmin=-v, vmax=v) for v in vmaxes]
 
     cmin_total, cmax_total = data_range(pct_df["total"])
-    cranges     = [data_range(pct_df[s]) for s in OUTPUT_SECTORS]
+    cranges = [data_range(pct_df[s]) for s in OUTPUT_SECTORS]
     ticks_total = data_ticks(cmin_total, cmax_total)
-    ticks_list  = [data_ticks(cmin, cmax) for cmin, cmax in cranges]
+    ticks_list = [data_ticks(cmin, cmax) for cmin, cmax in cranges]
 
     fig_w_in = 180 / 25.4
     fig_h_in = fig_w_in * 0.52
     fig = plt.figure(figsize=(fig_w_in, fig_h_in))
 
     outer = gridspec.GridSpec(
-        1, 2, figure=fig,
-        left=0.005, right=0.995,
-        bottom=0.005, top=0.965,
-        wspace=0.04, width_ratios=[1, 2.2],
+        1,
+        2,
+        figure=fig,
+        left=0.005,
+        right=0.995,
+        bottom=0.005,
+        top=0.965,
+        wspace=0.04,
+        width_ratios=[1, 2.2],
     )
     left_gs = gridspec.GridSpecFromSubplotSpec(
-        2, 1, subplot_spec=outer[0],
-        height_ratios=[22, 1], hspace=0.06,
+        2,
+        1,
+        subplot_spec=outer[0],
+        height_ratios=[22, 1],
+        hspace=0.06,
     )
     ax_total = fig.add_subplot(left_gs[0])
 
     right_gs = gridspec.GridSpecFromSubplotSpec(
-        4, 3, subplot_spec=outer[1],
+        4,
+        3,
+        subplot_spec=outer[1],
         height_ratios=[22, 1, 22, 1],
-        hspace=0.55, wspace=0.18,
+        hspace=0.55,
+        wspace=0.18,
     )
     sector_axes, sector_caxs = [], []
     for i in range(len(OUTPUT_SECTORS)):
         r, c = divmod(i, 3)
-        sector_axes.append(fig.add_subplot(right_gs[r * 2,     c]))
+        sector_axes.append(fig.add_subplot(right_gs[r * 2, c]))
         sector_caxs.append(fig.add_subplot(right_gs[r * 2 + 1, c]))
 
     draw_panel(
-        ax_total, eu_gdf,
-        pct_col="total", percap_col="total_percap",
-        norm=norm_total, cmap=cmap,
-        title=r"Total CO$_2$ emissions", letter="a",
+        ax_total,
+        eu_gdf,
+        pct_col="total",
+        percap_col="total_percap",
+        norm=norm_total,
+        cmap=cmap,
+        title=r"Total CO$_2$ emissions",
+        letter="a",
     )
     for i, (sector, ax) in enumerate(zip(OUTPUT_SECTORS, sector_axes)):
         draw_panel(
-            ax, eu_gdf,
-            pct_col=sector, percap_col=f"{sector}_percap",
-            norm=norms[i], cmap=cmap,
-            title=SECTOR_LABELS[sector], letter="bcdefg"[i],
+            ax,
+            eu_gdf,
+            pct_col=sector,
+            percap_col=f"{sector}_percap",
+            norm=norms[i],
+            cmap=cmap,
+            title=SECTOR_LABELS[sector],
+            letter="bcdefg"[i],
         )
 
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
     T = fig.transFigure.inverted()
 
-    cbar_h       = 0.013
-    dot_leg_h    = 0.055
-    gap_map_leg  = 0.006
+    cbar_h = 0.013
+    dot_leg_h = 0.055
+    gap_map_leg = 0.006
     gap_leg_cbar = 0.005
-    cx_pad       = 0.08
+    cx_pad = 0.08
 
     def _strip_below(ax_bbox, strip_h, gap_above):
         return [
@@ -541,18 +636,26 @@ def create_map_figure(
 
     bbox_total = ax_total.get_tightbbox(renderer).transformed(T)
     draw_dot_legend_axes(
-        fig, eu_gdf["total_percap"].dropna(),
+        fig,
+        eu_gdf["total_percap"].dropna(),
         _strip_below(bbox_total, dot_leg_h, gap_map_leg),
     )
-    cax_total = fig.add_axes([
-        bbox_total.x0 + cx_pad * bbox_total.width,
-        bbox_total.y0 - gap_map_leg - dot_leg_h - gap_leg_cbar - cbar_h,
-        bbox_total.width * (1 - 2 * cx_pad),
-        cbar_h,
-    ])
+    cax_total = fig.add_axes(
+        [
+            bbox_total.x0 + cx_pad * bbox_total.width,
+            bbox_total.y0 - gap_map_leg - dot_leg_h - gap_leg_cbar - cbar_h,
+            bbox_total.width * (1 - 2 * cx_pad),
+            cbar_h,
+        ]
+    )
     draw_colorbar(
-        cax_total, fig, cmap, vmax_total,
-        cmin_total, cmax_total, ticks_total,
+        cax_total,
+        fig,
+        cmap,
+        vmax_total,
+        cmin_total,
+        cmax_total,
+        ticks_total,
         label="Change 2024–2030 (%)",
     )
 
@@ -561,16 +664,19 @@ def create_map_figure(
     ):
         bbox = ax.get_tightbbox(renderer).transformed(T)
         draw_dot_legend_axes(
-            fig, eu_gdf[f"{sector}_percap"].dropna(),
+            fig,
+            eu_gdf[f"{sector}_percap"].dropna(),
             _strip_below(bbox, dot_leg_h, gap_map_leg),
         )
         sector_caxs[i].remove()
-        cax = fig.add_axes([
-            bbox.x0 + cx_pad * bbox.width,
-            bbox.y0 - gap_map_leg - dot_leg_h - gap_leg_cbar - cbar_h,
-            bbox.width * (1 - 2 * cx_pad),
-            cbar_h,
-        ])
+        cax = fig.add_axes(
+            [
+                bbox.x0 + cx_pad * bbox.width,
+                bbox.y0 - gap_map_leg - dot_leg_h - gap_leg_cbar - cbar_h,
+                bbox.width * (1 - 2 * cx_pad),
+                cbar_h,
+            ]
+        )
         draw_colorbar(cax, fig, cmap, vmax, cmin, cmax, ticks, label="Change (%)")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -587,6 +693,7 @@ def create_map_figure(
 # Entry point
 # =============================================================================
 
+
 def main():
     print("=" * 60)
     print("GENERATING SI MAP v4 — DOT MAP (color=%, size=per capita linear)")
@@ -595,9 +702,9 @@ def main():
     with open(DATASET_PATH, "rb") as f:
         dataset = pickle.load(f)
 
-    population_df          = load_population()
-    pct_df, percap_df      = compute_pct_and_percap(dataset, population_df)
-    eu_gdf                 = load_eu_geodataframe()
+    population_df = load_population()
+    pct_df, percap_df = compute_pct_and_percap(dataset, population_df)
+    eu_gdf = load_eu_geodataframe()
 
     missing = set(EU27_COUNTRIES) - set(eu_gdf["iso2"].dropna())
     if missing:

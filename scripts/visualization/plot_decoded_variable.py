@@ -32,46 +32,91 @@ import pandas as pd
 CLI_MODE = False
 
 VARIABLE = "Monthly_oil_price_statistics:Gasoline (unit/litre):Total price:US dollars"
-COUNTRY  = "IT"
+COUNTRY = "IT"
 
 # =============================================================================
 # Paths
 # =============================================================================
 
-DATASET_PATH        = Path("data/pytorch_datasets/unified_dataset.pkl")
+DATASET_PATH = Path("data/pytorch_datasets/unified_dataset.pkl")
 DECODED_PROJECTIONS = Path("data/projections/decoded_projections.csv")
 
 EU27_COUNTRIES = [
-    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "EL", "FI",
-    "FR", "DE", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
-    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+    "AT",
+    "BE",
+    "BG",
+    "HR",
+    "CY",
+    "CZ",
+    "DK",
+    "EE",
+    "EL",
+    "FI",
+    "FR",
+    "DE",
+    "HU",
+    "IE",
+    "IT",
+    "LV",
+    "LT",
+    "LU",
+    "MT",
+    "NL",
+    "PL",
+    "PT",
+    "RO",
+    "SK",
+    "SI",
+    "ES",
+    "SE",
 ]
 
 COUNTRY_NAMES = {
-    "AT": "Austria",    "BE": "Belgium",     "BG": "Bulgaria",
-    "HR": "Croatia",    "CY": "Cyprus",      "CZ": "Czechia",
-    "DK": "Denmark",    "EE": "Estonia",     "EL": "Greece",
-    "FI": "Finland",    "FR": "France",      "DE": "Germany",
-    "HU": "Hungary",    "IE": "Ireland",     "IT": "Italy",
-    "LV": "Latvia",     "LT": "Lithuania",   "LU": "Luxembourg",
-    "MT": "Malta",      "NL": "Netherlands", "PL": "Poland",
-    "PT": "Portugal",   "RO": "Romania",     "SK": "Slovakia",
-    "SI": "Slovenia",   "ES": "Spain",       "SE": "Sweden",
+    "AT": "Austria",
+    "BE": "Belgium",
+    "BG": "Bulgaria",
+    "HR": "Croatia",
+    "CY": "Cyprus",
+    "CZ": "Czechia",
+    "DK": "Denmark",
+    "EE": "Estonia",
+    "EL": "Greece",
+    "FI": "Finland",
+    "FR": "France",
+    "DE": "Germany",
+    "HU": "Hungary",
+    "IE": "Ireland",
+    "IT": "Italy",
+    "LV": "Latvia",
+    "LT": "Lithuania",
+    "LU": "Luxembourg",
+    "MT": "Malta",
+    "NL": "Netherlands",
+    "PL": "Poland",
+    "PT": "Portugal",
+    "RO": "Romania",
+    "SK": "Slovakia",
+    "SI": "Slovenia",
+    "ES": "Spain",
+    "SE": "Sweden",
 }
 
 # Last year that is purely historical (projections start at PROJ_START_YEAR)
 LAST_HISTORICAL_YEAR = 2023
-PROJ_START_YEAR      = 2024
+PROJ_START_YEAR = 2024
 
 # =============================================================================
 # Argument parsing
 # =============================================================================
 
+
 def parse_args():
     if not CLI_MODE:
+
         class NS:
             variable = VARIABLE
-            country  = COUNTRY
+            country = COUNTRY
+
         return NS()
 
     parser = argparse.ArgumentParser(
@@ -80,7 +125,9 @@ def parse_args():
         )
     )
     parser.add_argument(
-        "--variable", "-v", default=None,
+        "--variable",
+        "-v",
+        default=None,
         help=(
             "Base variable name, e.g. "
             "'Monthly_electricity_statistics:Net Electricity Production:Wind' "
@@ -89,7 +136,9 @@ def parse_args():
         ),
     )
     parser.add_argument(
-        "--country", "-c", default=None,
+        "--country",
+        "-c",
+        default=None,
         help="ISO-2 country code, e.g. DE, FR, IT.",
     )
     args = parser.parse_args()
@@ -105,6 +154,7 @@ def parse_args():
 # =============================================================================
 # Dataset loading
 # =============================================================================
+
 
 def load_dataset_obj():
     repo_root = str(Path(__file__).resolve().parents[2])
@@ -122,6 +172,7 @@ def load_dataset_obj():
 # =============================================================================
 # Column matching
 # =============================================================================
+
 
 def find_matching_columns(base_name: str, all_columns: list) -> list:
     """
@@ -146,7 +197,7 @@ def find_matching_columns(base_name: str, all_columns: list) -> list:
         m = suffix_re.match(col)
         if m is None:
             continue
-        col_base   = m.group(1)
+        col_base = m.group(1)
         col_suffix = m.group(2)
         if col_base == base_name:
             matched.append((col, int(col_suffix) if col_suffix else -1))
@@ -177,6 +228,7 @@ def suffix_to_decimal(suffix: int) -> float:
 # Historical data extraction
 # =============================================================================
 
+
 def extract_historical(dataset, country: str, columns: list) -> pd.DataFrame:
     """
     Returns a tidy DataFrame with one row per (year, sub-column) observation,
@@ -186,35 +238,35 @@ def extract_historical(dataset, country: str, columns: list) -> pd.DataFrame:
 
     rows = []
     for col in columns:
-        m          = suffix_re.match(col)
-        suffix     = int(m.group(2)) if m.group(2) else -1
+        m = suffix_re.match(col)
+        suffix = int(m.group(2)) if m.group(2) else -1
         dec_offset = suffix_to_decimal(suffix)
-        col_idx    = list(dataset.input_variable_names).index(col)
+        col_idx = list(dataset.input_variable_names).index(col)
 
         for i, (_, row) in enumerate(dataset.keys.iterrows()):
             if row["geo"] != country:
                 continue
-            year       = int(row["year"])
+            year = int(row["year"])
             scaled_val = float(dataset.input_df[i, col_idx].cpu())
 
             params = dataset.precomputed_scaling_params.get(col)
             if params is not None and dataset.scaling_type == "normalization":
                 phys_val = scaled_val * params["std"] + params["mean"]
             elif params is not None and dataset.scaling_type == "maxmin":
-                phys_val = (
-                    scaled_val * (params["max"] - params["min"]) + params["min"]
-                )
+                phys_val = scaled_val * (params["max"] - params["min"]) + params["min"]
             else:
                 phys_val = scaled_val
 
-            rows.append({
-                "decimal_year":   year + dec_offset,
-                "year":           year,
-                "suffix":         suffix,
-                "col":            col,
-                "value_scaled":   scaled_val,
-                "value_physical": phys_val,
-            })
+            rows.append(
+                {
+                    "decimal_year": year + dec_offset,
+                    "year": year,
+                    "suffix": suffix,
+                    "col": col,
+                    "value_scaled": scaled_val,
+                    "value_physical": phys_val,
+                }
+            )
 
     return pd.DataFrame(rows).sort_values("decimal_year").reset_index(drop=True)
 
@@ -222,6 +274,7 @@ def extract_historical(dataset, country: str, columns: list) -> pd.DataFrame:
 # =============================================================================
 # Projected data extraction
 # =============================================================================
+
 
 def extract_projected(country: str, columns: list) -> pd.DataFrame:
     """
@@ -260,23 +313,25 @@ def extract_projected(country: str, columns: list) -> pd.DataFrame:
 
     rows = []
     for col in columns:
-        m          = suffix_re.match(col)
-        suffix     = int(m.group(2)) if m.group(2) else -1
+        m = suffix_re.match(col)
+        suffix = int(m.group(2)) if m.group(2) else -1
         dec_offset = suffix_to_decimal(suffix)
 
         for year, group_vals in df.groupby("year")[col]:
             vals = group_vals.dropna().values
             if len(vals) == 0:
                 continue
-            rows.append({
-                "decimal_year": year + dec_offset,
-                "year":         year,
-                "suffix":       suffix,
-                "col":          col,
-                "mean":         np.mean(vals),
-                "p05":          np.percentile(vals, 5),
-                "p95":          np.percentile(vals, 95),
-            })
+            rows.append(
+                {
+                    "decimal_year": year + dec_offset,
+                    "year": year,
+                    "suffix": suffix,
+                    "col": col,
+                    "mean": np.mean(vals),
+                    "p05": np.percentile(vals, 5),
+                    "p95": np.percentile(vals, 95),
+                }
+            )
 
     return pd.DataFrame(rows).sort_values("decimal_year").reset_index(drop=True)
 
@@ -285,16 +340,16 @@ def extract_projected(country: str, columns: list) -> pd.DataFrame:
 # Plot
 # =============================================================================
 
+
 def make_plot(
     base_name: str,
     country: str,
     hist_df: pd.DataFrame,
     proj_df: pd.DataFrame,
 ) -> None:
-
-    country_label  = COUNTRY_NAMES.get(country, country)
-    color          = "#2980b9"
-    separator_year = float(PROJ_START_YEAR)   # vertical line at 2024.0
+    country_label = COUNTRY_NAMES.get(country, country)
+    color = "#2980b9"
+    separator_year = float(PROJ_START_YEAR)  # vertical line at 2024.0
 
     fig, ax = plt.subplots(figsize=(13, 5))
 
@@ -303,34 +358,53 @@ def make_plot(
         ax.plot(
             hist_df["decimal_year"],
             hist_df["value_physical"],
-            color=color, linewidth=1.6, zorder=3, label="Historical",
+            color=color,
+            linewidth=1.6,
+            zorder=3,
+            label="Historical",
         )
         ax.scatter(
             hist_df["decimal_year"],
             hist_df["value_physical"],
-            color=color, s=14, zorder=4, linewidths=0,
+            color=color,
+            s=14,
+            zorder=4,
+            linewidths=0,
         )
 
     # ── Projected — one continuous mean line + uncertainty band ───────────
     if not proj_df.empty:
         ax.axvline(
             separator_year,
-            color="#555555", linestyle="--", linewidth=1.0, alpha=0.7, zorder=2,
+            color="#555555",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.7,
+            zorder=2,
         )
         ax.axvspan(
-            separator_year, proj_df["decimal_year"].max() + 0.1,
-            alpha=0.04, color="#000000", zorder=0,
+            separator_year,
+            proj_df["decimal_year"].max() + 0.1,
+            alpha=0.04,
+            color="#000000",
+            zorder=0,
         )
         ax.plot(
             proj_df["decimal_year"],
             proj_df["mean"],
-            color=color, linewidth=1.6, zorder=3, label="Projected (mean)",
+            color=color,
+            linewidth=1.6,
+            zorder=3,
+            label="Projected (mean)",
         )
         ax.fill_between(
             proj_df["decimal_year"],
             proj_df["p05"],
             proj_df["p95"],
-            color=color, alpha=0.20, zorder=1, label="90 % MC band",
+            color=color,
+            alpha=0.20,
+            zorder=1,
+            label="90 % MC band",
         )
 
     ax.legend(frameon=False, fontsize=9)
@@ -338,7 +412,8 @@ def make_plot(
     ax.set_ylabel("Value (physical units)", fontsize=11)
     ax.set_title(
         f"{base_name}\n{country_label} ({country})",
-        fontsize=12, fontweight="bold",
+        fontsize=12,
+        fontweight="bold",
     )
     ax.grid(True, linestyle="--", alpha=0.25, linewidth=0.5)
     ax.spines["top"].set_visible(False)
@@ -352,10 +427,11 @@ def make_plot(
 # Entry point
 # =============================================================================
 
+
 def main():
-    args      = parse_args()
+    args = parse_args()
     base_name = args.variable
-    country   = args.country.upper()
+    country = args.country.upper()
 
     if country not in EU27_COUNTRIES:
         sys.exit(
@@ -371,19 +447,15 @@ def main():
 
     columns = find_matching_columns(base_name, input_variable_names)
     if not columns:
-        candidates = sorted({
-            re.sub(r"_\d+$", "", c) for c in input_variable_names
-        })
+        candidates = sorted({re.sub(r"_\d+$", "", c) for c in input_variable_names})
         close = [c for c in candidates if base_name.lower() in c.lower()]
         hint = (
             "\nDid you mean one of these?\n  " + "\n  ".join(close[:10])
-            if close else
-            "\nAvailable base names (first 20):\n  " +
-            "\n  ".join(candidates[:20])
+            if close
+            else "\nAvailable base names (first 20):\n  " + "\n  ".join(candidates[:20])
         )
         sys.exit(
-            f"[ERROR] No columns found matching base variable:\n  '{base_name}'"
-            + hint
+            f"[ERROR] No columns found matching base variable:\n  '{base_name}'" + hint
         )
 
     print(f"Found {len(columns)} column(s) for '{base_name}':")
