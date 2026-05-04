@@ -579,6 +579,177 @@ def create_figure(df, ff55_pct, ff55_mt):
 
 
 # =============================================================================
+# Calibrated CI helpers
+# =============================================================================
+
+CALIBRATION_PATH = Path("data/calibration/calibration_temperatures.csv")
+
+
+def _load_temperatures() -> dict[tuple[str, str], float]:
+    """Load (geo, sector) -> T from calibration_temperatures.csv."""
+    if not CALIBRATION_PATH.exists():
+        print(f"[WARNING] {CALIBRATION_PATH} not found — using T=1 (no calibration).")
+        return {}
+    df = pd.read_csv(CALIBRATION_PATH)
+    return {(row["geo"], row["sector"]): float(row["T"]) for _, row in df.iterrows()}
+
+
+def _calibrated_total_samples_mt(
+    df_mc: pd.DataFrame,
+    dataset,
+    geos: list,
+    year: int,
+    temperatures: dict,
+    population_df: pd.DataFrame,
+) -> np.ndarray:
+    """
+    Return a (n_mc,) array of calibrated total CO2 in Mt for a group of
+    countries at a given projection year.
+
+    For each sector s and country g the calibration transform is:
+        y_cal_s = mean_s + T_{g,s} * (y_mc_s - mean_s)
+
+    Physical units: y_mc_s is in kg CO2 / hab (after inverse z-score).
+    Multiplying by population gives kg CO2 total; dividing by 1e6 gives Mt.
+    """
+    df_year = df_mc[(df_mc["year"] == year) & (df_mc["geo"].isin(geos))].copy()
+    if df_year.empty:
+        return np.array([])
+
+    # Merge population if not already present
+    if "population" not in df_year.columns:
+        df_year = df_year.merge(population_df, on=["geo", "year"], how="left")
+
+    mc_samples = sorted(df_year["mc_sample"].unique())
+    n_mc = len(mc_samples)
+    sample_index = {s: i for i, s in enumerate(mc_samples)}
+
+    totals = np.zeros(n_mc)
+
+    for s in OUTPUT_SECTORS:
+        m = dataset.precomputed_scaling_params[s]["mean"]
+        sd = dataset.precomputed_scaling_params[s]["std"]
+        df_year[f"{s}_phys"] = (df_year[f"emissions_{s}"] * sd + m).clip(lower=0)
+
+    for s in OUTPUT_SECTORS:
+        # Pivot: rows = mc_sample, cols = geo  →  shape (n_mc, n_geo)
+        pivot = df_year.pivot(
+            index="mc_sample", columns="geo", values=f"{s}_phys"
+        ).reindex(index=mc_samples, columns=geos)
+        vals = pivot.values  # (n_mc, n_geo) kg/hab
+
+        means = np.nanmean(vals, axis=0)  # (n_geo,)
+        Ts = np.array([temperatures.get((g, s), 1.0) for g in geos])
+        pops = np.array(
+            [
+                df_year.loc[df_year["geo"] == g, "population"].iloc[0]
+                if (df_year["geo"] == g).any()
+                else 0.0
+                for g in geos
+            ]
+        )
+
+        # Calibrate then weight by population
+        cal = means + Ts * (vals - means)  # (n_mc, n_geo) kg/hab
+        totals += (cal * pops).sum(axis=1)  # kg CO2 total
+
+    return totals / 1e6  # → Mt
+
+
+def print_calibrated_ci(dataset, population_df):
+    """
+    Append 90 % calibrated MC confidence intervals to the paper numbers.
+
+    Reports [p05, p95] of the temperature-calibrated distribution of 2030
+    projected total CO2 (Mt) for EU27 and each member state individually.
+    The calibration follows exactly the same procedure used in
+    figure_attribution_panels.py:
+        y_cal = mean_s + T_{geo,sector} * (y_mc - mean_s)
+    and the interval is the 5th–95th percentile of the resulting
+    per-sample total (summed across all sectors × population).
+    """
+    print("\n" + "=" * 65)
+    print("90 % CALIBRATED CI — 2030 TOTAL CO2 PROJECTIONS (Mt CO2)")
+    print("=" * 65)
+    print("  Calibration: y_cal = mean_s + T_{geo,s} * (y_mc - mean_s)")
+    print("  Interval: [5th percentile, 95th percentile] of MC samples")
+    print()
+
+    temperatures = _load_temperatures()
+    df_mc = pd.read_csv(MC_PROJECTIONS_PATH)
+    df_mc["geo"] = df_mc["geo"].astype(str)
+    df_mc = df_mc.merge(population_df, on=["geo", "year"], how="left")
+
+    # ── EU27 aggregate ────────────────────────────────────────────────────
+    eu_samples = _calibrated_total_samples_mt(
+        df_mc, dataset, EU27_COUNTRIES, 2030, temperatures, population_df
+    )
+    if eu_samples.size:
+        lo, hi = np.percentile(eu_samples, 5), np.percentile(eu_samples, 95)
+        print(
+            f"  {'EU27':<15s}  mean={eu_samples.mean():7.1f}  "
+            f"p05={lo:7.1f}  p95={hi:7.1f}  Mt CO2"
+        )
+
+    # ── Per-country ───────────────────────────────────────────────────────
+    print(
+        f"\n  {'Country':<16s} {'ISO2':>4s}  {'mean':>8s}  "
+        f"{'p05 (5%)':>10s}  {'p95 (95%)':>10s}  (Mt CO2)"
+    )
+    print("  " + "-" * 58)
+
+    for geo in sorted(EU27_COUNTRIES):
+        samples = _calibrated_total_samples_mt(
+            df_mc, dataset, [geo], 2030, temperatures, population_df
+        )
+        if samples.size == 0:
+            continue
+        lo, hi = np.percentile(samples, 5), np.percentile(samples, 95)
+        name = COUNTRY_NAMES.get(geo, geo)
+        print(f"  {name:<16s} {geo:>4s}  {samples.mean():8.1f}  {lo:10.1f}  {hi:10.1f}")
+
+    # ── Per-country % change from 2024 with CI ────────────────────────────
+    print(
+        f"\n  {'Country':<16s} {'ISO2':>4s}  {'Δ mean %':>9s}  "
+        f"{'Δ p05 %':>9s}  {'Δ p95 %':>9s}  (vs 2024 baseline)"
+    )
+    print("  " + "-" * 58)
+
+    baseline_mt = get_2024_baseline_mt(dataset, population_df)
+
+    for geo in sorted(EU27_COUNTRIES):
+        samples = _calibrated_total_samples_mt(
+            df_mc, dataset, [geo], 2030, temperatures, population_df
+        )
+        base = baseline_mt.get(geo)
+        if samples.size == 0 or not base or base <= 0:
+            continue
+        lo_mt, hi_mt = np.percentile(samples, 5), np.percentile(samples, 95)
+        mean_pct = (samples.mean() - base) / base * 100
+        lo_pct = (lo_mt - base) / base * 100
+        hi_pct = (hi_mt - base) / base * 100
+        name = COUNTRY_NAMES.get(geo, geo)
+        print(
+            f"  {name:<16s} {geo:>4s}  {mean_pct:+9.1f}%  "
+            f"{lo_pct:+9.1f}%  {hi_pct:+9.1f}%"
+        )
+
+    # ── EU27 % change with CI ─────────────────────────────────────────────
+    eu_base = baseline_mt.get("EU27")
+    if eu_samples.size and eu_base and eu_base > 0:
+        lo_mt, hi_mt = np.percentile(eu_samples, 5), np.percentile(eu_samples, 95)
+        mean_pct = (eu_samples.mean() - eu_base) / eu_base * 100
+        lo_pct = (lo_mt - eu_base) / eu_base * 100
+        hi_pct = (hi_mt - eu_base) / eu_base * 100
+        print(
+            f"\n  {'EU27 (aggregate)':<16s}      {mean_pct:+9.1f}%  "
+            f"{lo_pct:+9.1f}%  {hi_pct:+9.1f}%  (vs 2024 baseline)"
+        )
+
+    print()
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -625,7 +796,8 @@ def main():
         base = row["baseline_mt"]
         proj = base + row["mc_mt"]
         print(
-            f"  {name:<15s} {row['mc_pct']:>+7.1f}% {row['mc_mt']:>+9.1f}  {base:>7.1f}  {proj:>7.1f}"
+            f"  {name:<15s} {row['mc_pct']:>+7.1f}% {row['mc_mt']:>+9.1f}  "
+            f"{base:>7.1f}  {proj:>7.1f}"
         )
 
     # ── Numbers for paper Section: "Falling short of targets" ──────────────
@@ -660,7 +832,8 @@ def main():
         if not np.isnan(scen_pct):
             gap = scen_pct - ff55_pct
             print(
-                f"  {label:<28s} % gap vs FF55: {gap:+.1f} pp  ({label}: {scen_pct:+.1f}%)"
+                f"  {label:<28s} % gap vs FF55: {gap:+.1f} pp  "
+                f"({label}: {scen_pct:+.1f}%)"
             )
         else:
             print(f"  {label:<28s} % gap vs FF55: N/A")
@@ -687,7 +860,7 @@ def main():
         for c in big5
         if not df[df["geo"] == c].empty
     )
-    big5_share_2030 = big5_2024 / eu_2024 * 100  # share of 2024 base; approx for 2030
+    big5_share_2030 = big5_2024 / eu_2024 * 100
     big5_collective_pct = (big5_2030 - big5_2024) / big5_2024 * 100
     print(f"\n  Big-5 share of EU27 2024 emissions: {big5_share_2030:.1f}%")
     print(f"  Big-5 collective % change 2024→30 : {big5_collective_pct:+.1f}%")
@@ -695,6 +868,9 @@ def main():
         row = df[df["geo"] == c]
         if not row.empty:
             print(f"    {c}: {row['mc_pct'].values[0]:+.1f}%")
+
+    # ── 90 % calibrated confidence intervals ─────────────────────────
+    print_calibrated_ci(dataset, population_df)
 
     print("Done!")
 

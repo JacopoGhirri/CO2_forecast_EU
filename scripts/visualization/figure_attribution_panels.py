@@ -221,7 +221,7 @@ def apply_calibration_to_mc(
 
 
 # =============================================================================
-# Data helpers  (unchanged from original)
+# Data helpers
 # =============================================================================
 
 
@@ -355,10 +355,7 @@ def build_sector_data(historical, forecast_summary):
 # =============================================================================
 
 
-def build_mc_2030_country_calibrated(
-    df_mc,
-    temperatures,
-):
+def build_mc_2030_country_calibrated(df_mc, temperatures):
     country_groups = ["DE", "FR", "IT", "ES", "PL", "East Europe", "West Europe"]
 
     df_2030_cal = apply_calibration_to_mc(df_mc, temperatures, dataset=None, year=2030)
@@ -373,8 +370,6 @@ def build_mc_2030_country_calibrated(
             if cd.empty:
                 row[c] = 0.0
             else:
-                # Sum calibrated sector columns — total_CO2 is never updated
-                # by apply_calibration_to_mc so must not be used here
                 row[c] = sum(cd[f"{s}_total"].values[0] for s in OUTPUT_SECTORS) / 1e9
 
         row["East Europe"] = (
@@ -419,7 +414,7 @@ def build_mc_2030_sector_calibrated(
 
 
 # =============================================================================
-# Legend helper  (unchanged)
+# Legend helper
 # =============================================================================
 
 
@@ -449,7 +444,7 @@ def _place_legend_above(ax, groups, colors_map, labels_map, ncol=4):
 
 
 # =============================================================================
-# Main figure  (area panels unchanged; boxplot panels use calibrated data)
+# Main figure
 # =============================================================================
 
 
@@ -627,6 +622,100 @@ def create_panel_figure(
 
 
 # =============================================================================
+# Calibrated CI reporting for paper numbers
+# =============================================================================
+
+
+def print_calibrated_ci_numbers(
+    mc_country_df: pd.DataFrame,
+    mc_sector_df: pd.DataFrame,
+    combined_country: pd.DataFrame,
+    combined_sector: pd.DataFrame,
+) -> None:
+    """
+    Report 90 % calibrated confidence intervals (5th–95th percentile) for
+    all quantities shown in Figure 3 panels (c) and (d).
+
+    The distributions are *identical* to what the boxplots display
+    (whiskers = 5th/95th pct of the calibrated MC spread), so the numbers
+    here exactly correspond to the visual extent of the figure.
+
+    Groups in panel (c) — country/region totals (Gt CO2):
+        DE, FR, IT, ES, PL, East Europe aggregate, West Europe aggregate
+
+    Sectors in panel (d) — EU27 sector totals (Gt CO2):
+        HeatingCooling, Industry, Land, Mobility, Other, Power
+    """
+    print("\n" + "=" * 70)
+    print("90 % CALIBRATED CI — FIGURE 3 BOXPLOT QUANTITIES (Gt CO2)")
+    print("=" * 70)
+    print("  Source: calibrated MC distribution (T_{geo,sector} applied)")
+    print("  Interval: whiskers = [5th percentile, 95th percentile]")
+    print()
+
+    # ── Panel (c): country/region groups ─────────────────────────────────
+    country_groups = ["DE", "FR", "IT", "ES", "PL", "East Europe", "West Europe"]
+    print(f"  Panel (c) — 2030 projected total CO2 by country/region (Gt):")
+    print(f"  {'Group':<22s}  {'median':>8s}  {'p05 (5%)':>10s}  {'p95 (95%)':>10s}")
+    print("  " + "-" * 56)
+    for g in country_groups:
+        vals = mc_country_df[g].dropna().values
+        if vals.size == 0:
+            continue
+        med = np.median(vals)
+        lo = np.percentile(vals, 5)
+        hi = np.percentile(vals, 95)
+        label = COUNTRY_LABELS.get(g, g)
+        print(f"  {label:<22s}  {med:8.3f}  {lo:10.3f}  {hi:10.3f}")
+
+    # EU27 total from summing the country columns
+    eu_total = mc_country_df[country_groups].sum(axis=1).values
+    print(
+        f"  {'EU27 total (sum)':<22s}  {np.median(eu_total):8.3f}  "
+        f"{np.percentile(eu_total, 5):10.3f}  {np.percentile(eu_total, 95):10.3f}"
+    )
+
+    # ── Panel (d): sector totals ──────────────────────────────────────────
+    print(f"\n  Panel (d) — 2030 projected EU27 CO2 by sector (Gt):")
+    print(f"  {'Sector':<20s}  {'median':>8s}  {'p05 (5%)':>10s}  {'p95 (95%)':>10s}")
+    print("  " + "-" * 54)
+    sector_total = np.zeros(len(mc_sector_df))
+    for s in OUTPUT_SECTORS:
+        vals = mc_sector_df[s].dropna().values
+        if vals.size == 0:
+            continue
+        med = np.median(vals)
+        lo = np.percentile(vals, 5)
+        hi = np.percentile(vals, 95)
+        sector_total += vals
+        label = SECTOR_LABELS.get(s, s)
+        print(f"  {label:<20s}  {med:8.3f}  {lo:10.3f}  {hi:10.3f}")
+    print(
+        f"  {'EU27 total (sum)':<20s}  {np.median(sector_total):8.3f}  "
+        f"{np.percentile(sector_total, 5):10.3f}  {np.percentile(sector_total, 95):10.3f}"
+    )
+
+    # ── Reduction vs 2024 ─────────────────────────────────────────────────
+    eu_2024_total = (
+        combined_country[combined_country["year"] == BASELINE_YEAR][
+            ["DE", "FR", "IT", "ES", "PL", "East Europe", "West Europe"]
+        ]
+        .sum(axis=1)
+        .values
+    )
+    if eu_2024_total.size:
+        eu_2024_gt = eu_2024_total[0] / 1e9
+        med_pct = (np.median(eu_total) - eu_2024_gt) / eu_2024_gt * 100
+        lo_pct = (np.percentile(eu_total, 5) - eu_2024_gt) / eu_2024_gt * 100
+        hi_pct = (np.percentile(eu_total, 95) - eu_2024_gt) / eu_2024_gt * 100
+        print(f"\n  EU27 % change 2024→2030 (calibrated):")
+        print(f"    median={med_pct:+.1f}%  p05={lo_pct:+.1f}%  p95={hi_pct:+.1f}%")
+        print(f"    (2024 reference: {eu_2024_gt:.3f} Gt)")
+
+    print()
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -679,7 +768,6 @@ def main():
         .mean()
         * 1e9
     )
-    eu_2030_total = eu_mc_2030  # Gt → tonnes already (*1e9 above)
     total_pct_from_2010 = (eu_mc_2030 - eu_2010) / eu_2010 * 100
 
     print(f"  EU27 total CO2 2010: {eu_2010 / 1e9:.2f} Gt")
@@ -698,7 +786,6 @@ def main():
 
     # Sector historical (2010) from stacked area data
     hist_sector_2010 = eu27_hist[eu27_hist["year"] == 2010]
-    hist_sector_2024 = eu27_hist[eu27_hist["year"] == 2024]
     print("\n  Sector % change 2010→2030 (vs 2010 historical total):")
     for s in OUTPUT_SECTORS:
         s_col = f"{s}_total"
@@ -707,8 +794,15 @@ def main():
             v2030 = mc_sector_df[s].median() * 1e9
             pct = (v2030 - v2010) / v2010 * 100 if v2010 > 0 else float("nan")
             print(
-                f"    {s:<16s}: 2010={v2010 / 1e9:.3f} Gt  2030≈{v2030 / 1e9:.3f} Gt  Δ={pct:+.1f}%"
+                f"    {s:<16s}: 2010={v2010 / 1e9:.3f} Gt  "
+                f"2030≈{v2030 / 1e9:.3f} Gt  Δ={pct:+.1f}%"
             )
+
+    # ── 90 % calibrated CI for all boxplot quantities ─────────────────
+    print_calibrated_ci_numbers(
+        mc_country_df, mc_sector_df, combined_country, combined_sector
+    )
+
     print("\nDone!")
 
 

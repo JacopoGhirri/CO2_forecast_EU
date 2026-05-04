@@ -35,6 +35,7 @@ DATASET_PATH = Path("data/pytorch_datasets/unified_dataset.pkl")
 MC_PROJECTIONS_PATH = Path("data/projections/mc_projections.csv")
 POPULATION_HIST_PATH = Path("data/full_timeseries/population.csv")
 POPULATION_PROJ_PATH = Path("data/full_timeseries/projections/population.csv")
+CALIBRATION_PATH = Path("data/calibration/calibration_temperatures.csv")
 
 OUTPUT_DIR = Path("outputs/figures")
 TABLE_DIR = Path("outputs/tables")
@@ -281,9 +282,6 @@ def create_heatmap(changes_df, change_thresholds, confidence_cutoffs):
         index="sector", columns="geo", values="mean_uncertainty"
     )
 
-    # Overall row: weighted % change in *total* emissions (sum across sectors),
-    # not the mean of sector-level percentages, which would be unweighted and
-    # inconsistent with the aggregate number reported in Fig 1.
     total_2024 = changes_df.groupby("geo")["emissions_2024"].sum()
     total_2030 = changes_df.groupby("geo")["emissions_2030"].sum()
     overall_pct = (total_2030 - total_2024) / total_2024.abs() * 100
@@ -332,7 +330,6 @@ def create_heatmap(changes_df, change_thresholds, confidence_cutoffs):
                 lum = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
                 txt_color = "white" if lum < 0.55 else "black"
                 weight = "bold" if (i == 0 or j == 0) else "regular"
-                # Big enough to survive 50% downscaling in LaTeX
                 size = 14 if (i == 0 or j == 0) else 13
                 ax.text(
                     j,
@@ -383,7 +380,7 @@ def create_heatmap(changes_df, change_thresholds, confidence_cutoffs):
     ax.set_title(
         "Change in emissions, 2024–2030 (%)",
         fontsize=20,
-        pad=8,  # tight gap between title and country labels
+        pad=8,
         fontweight="normal",
         color="#333333",
     )
@@ -437,6 +434,219 @@ def create_heatmap(changes_df, change_thresholds, confidence_cutoffs):
 
 
 # =============================================================================
+# Calibrated CI helpers
+# =============================================================================
+
+
+def _load_temperatures() -> dict[tuple[str, str], float]:
+    """Load (geo, sector) -> T from calibration_temperatures.csv."""
+    if not CALIBRATION_PATH.exists():
+        print(f"[WARNING] {CALIBRATION_PATH} not found — using T=1 (no calibration).")
+        return {}
+    df = pd.read_csv(CALIBRATION_PATH)
+    return {(row["geo"], row["sector"]): float(row["T"]) for _, row in df.iterrows()}
+
+
+def _calibrated_sector_samples(
+    df_mc: pd.DataFrame,
+    dataset,
+    geos: list,
+    year: int,
+    temperatures: dict,
+    sector: str,
+) -> np.ndarray:
+    """
+    Return a (n_mc,) array of calibrated per-sector total CO2 (Mt) for a
+    group of countries at a given year.
+
+    Calibration:  y_cal = mean_s + T_{geo,s} * (y_mc - mean_s)
+    Physical units: kg CO2 / hab → multiplied by population → Mt.
+    """
+    df_year = df_mc[(df_mc["year"] == year) & (df_mc["geo"].isin(geos))].copy()
+    if df_year.empty:
+        return np.array([])
+
+    mc_samples = sorted(df_year["mc_sample"].unique())
+
+    m = dataset.precomputed_scaling_params[sector]["mean"]
+    sd = dataset.precomputed_scaling_params[sector]["std"]
+    df_year[f"{sector}_phys"] = (df_year[f"emissions_{sector}"] * sd + m).clip(lower=0)
+
+    pivot = df_year.pivot(
+        index="mc_sample", columns="geo", values=f"{sector}_phys"
+    ).reindex(index=mc_samples, columns=geos)
+    vals = pivot.values  # (n_mc, n_geo)
+    means = np.nanmean(vals, axis=0)
+    Ts = np.array([temperatures.get((g, sector), 1.0) for g in geos])
+    pops = np.array(
+        [
+            df_year.loc[df_year["geo"] == g, "population"].iloc[0]
+            if (df_year["geo"] == g).any()
+            else 0.0
+            for g in geos
+        ]
+    )
+
+    cal = means + Ts * (vals - means)  # (n_mc, n_geo)
+    totals = (cal * pops).sum(axis=1)  # kg CO2 total
+    return totals / 1e6  # → Mt
+
+
+def print_calibrated_ci(dataset, population_df):
+    """
+    Append 90 % calibrated CI for all sector × country/EU27 combinations
+    shown in Figure 2.
+
+    For each sector s and each member state / EU27 aggregate:
+      - load MC samples
+      - apply calibration:  y_cal = mean_s + T_{geo,s} * (y_mc - mean_s)
+      - report [5th, 95th] percentile of the calibrated distribution
+      - also express as % change from 2024 baseline
+
+    Additionally reports the calibrated CI on the *overall* (all-sector)
+    total for EU27 and per country, matching the "Overall" row in the heatmap.
+    """
+    print("\n" + "=" * 75)
+    print("90 % CALIBRATED CI — FIGURE 2 SECTORAL CHANGES (Mt CO2, 2030)")
+    print("=" * 75)
+    print("  Calibration: y_cal = mean_s + T_{geo,s} * (y_mc - mean_s)")
+    print("  Interval: [5th percentile, 95th percentile]")
+    print()
+
+    temperatures = _load_temperatures()
+    df_mc = pd.read_csv(MC_PROJECTIONS_PATH)
+    df_mc["geo"] = df_mc["geo"].astype(str)
+    df_mc = df_mc.merge(population_df, on=["geo", "year"], how="left")
+
+    # Pre-compute 2024 baselines per (geo, sector)
+    df_2024 = df_mc[df_mc["year"] == 2024].copy()
+    for s in OUTPUT_SECTORS:
+        m = dataset.precomputed_scaling_params[s]["mean"]
+        sd = dataset.precomputed_scaling_params[s]["std"]
+        df_2024[f"{s}_phys"] = (df_2024[f"emissions_{s}"] * sd + m).clip(lower=0)
+        df_2024[f"{s}_total"] = df_2024[f"{s}_phys"] * df_2024["population"]
+
+    # ── Per-sector × per-country table ────────────────────────────────────
+    for s in OUTPUT_SECTORS:
+        label = SECTOR_DISPLAY.get(s, s).replace("\n", " ")
+        print(f"  Sector: {label}")
+        print(
+            f"  {'Country':<16s} {'ISO2':>4s}  {'mean Mt':>8s}  "
+            f"{'p05 (5%)':>10s}  {'p95 (95%)':>10s}  "
+            f"{'Δ mean %':>9s}  {'Δ p05 %':>9s}  {'Δ p95 %':>9s}"
+        )
+        print("  " + "-" * 80)
+
+        # EU27 aggregate for this sector
+        eu_samp = _calibrated_sector_samples(
+            df_mc, dataset, EU27_COUNTRIES, 2030, temperatures, s
+        )
+        eu_2024_val = (
+            df_2024[df_2024["geo"].isin(EU27_COUNTRIES)][f"{s}_total"].sum() / 1e6
+        )
+        if eu_samp.size and eu_2024_val > 0:
+            lo, hi = np.percentile(eu_samp, 5), np.percentile(eu_samp, 95)
+            m_pct = (eu_samp.mean() - eu_2024_val) / eu_2024_val * 100
+            lo_pct = (lo - eu_2024_val) / eu_2024_val * 100
+            hi_pct = (hi - eu_2024_val) / eu_2024_val * 100
+            print(
+                f"  {'EU27':<16s} {'':>4s}  {eu_samp.mean():8.1f}  "
+                f"{lo:10.1f}  {hi:10.1f}  "
+                f"{m_pct:+9.1f}%  {lo_pct:+9.1f}%  {hi_pct:+9.1f}%"
+            )
+
+        for geo in sorted(EU27_COUNTRIES):
+            samp = _calibrated_sector_samples(
+                df_mc, dataset, [geo], 2030, temperatures, s
+            )
+            base_val = df_2024[df_2024["geo"] == geo][f"{s}_total"].sum() / 1e6
+            if samp.size == 0 or base_val <= 0:
+                continue
+            lo, hi = np.percentile(samp, 5), np.percentile(samp, 95)
+            m_pct = (samp.mean() - base_val) / base_val * 100
+            lo_pct = (lo - base_val) / base_val * 100
+            hi_pct = (hi - base_val) / base_val * 100
+            name = COUNTRY_NAMES.get(geo, geo)
+            print(
+                f"  {name:<16s} {geo:>4s}  {samp.mean():8.1f}  "
+                f"{lo:10.1f}  {hi:10.1f}  "
+                f"{m_pct:+9.1f}%  {lo_pct:+9.1f}%  {hi_pct:+9.1f}%"
+            )
+        print()
+
+    # ── Overall (all sectors summed) CI ───────────────────────────────────
+    print(f"  Overall (all sectors combined):")
+    print(
+        f"  {'Country':<16s} {'ISO2':>4s}  {'mean Mt':>8s}  "
+        f"{'p05 (5%)':>10s}  {'p95 (95%)':>10s}  "
+        f"{'Δ mean %':>9s}  {'Δ p05 %':>9s}  {'Δ p95 %':>9s}"
+    )
+    print("  " + "-" * 80)
+
+    # EU27 overall
+    eu_total_samp = np.zeros(0)
+    for s in OUTPUT_SECTORS:
+        samp = _calibrated_sector_samples(
+            df_mc, dataset, EU27_COUNTRIES, 2030, temperatures, s
+        )
+        if eu_total_samp.size == 0:
+            eu_total_samp = samp
+        elif samp.size == eu_total_samp.size:
+            eu_total_samp = eu_total_samp + samp
+
+    eu_2024_total = (
+        df_2024[df_2024["geo"].isin(EU27_COUNTRIES)][
+            [f"{s}_total" for s in OUTPUT_SECTORS]
+        ]
+        .sum()
+        .sum()
+        / 1e6
+    )
+    if eu_total_samp.size and eu_2024_total > 0:
+        lo, hi = np.percentile(eu_total_samp, 5), np.percentile(eu_total_samp, 95)
+        m_pct = (eu_total_samp.mean() - eu_2024_total) / eu_2024_total * 100
+        lo_pct = (lo - eu_2024_total) / eu_2024_total * 100
+        hi_pct = (hi - eu_2024_total) / eu_2024_total * 100
+        print(
+            f"  {'EU27':<16s} {'':>4s}  {eu_total_samp.mean():8.1f}  "
+            f"{lo:10.1f}  {hi:10.1f}  "
+            f"{m_pct:+9.1f}%  {lo_pct:+9.1f}%  {hi_pct:+9.1f}%"
+        )
+
+    for geo in sorted(EU27_COUNTRIES):
+        geo_total = np.zeros(0)
+        for s in OUTPUT_SECTORS:
+            samp = _calibrated_sector_samples(
+                df_mc, dataset, [geo], 2030, temperatures, s
+            )
+            if geo_total.size == 0:
+                geo_total = samp
+            elif samp.size == geo_total.size:
+                geo_total = geo_total + samp
+
+        geo_2024_total = (
+            df_2024[df_2024["geo"] == geo][[f"{s}_total" for s in OUTPUT_SECTORS]]
+            .sum()
+            .sum()
+            / 1e6
+        )
+        if geo_total.size == 0 or geo_2024_total <= 0:
+            continue
+        lo, hi = np.percentile(geo_total, 5), np.percentile(geo_total, 95)
+        m_pct = (geo_total.mean() - geo_2024_total) / geo_2024_total * 100
+        lo_pct = (lo - geo_2024_total) / geo_2024_total * 100
+        hi_pct = (hi - geo_2024_total) / geo_2024_total * 100
+        name = COUNTRY_NAMES.get(geo, geo)
+        print(
+            f"  {name:<16s} {geo:>4s}  {geo_total.mean():8.1f}  "
+            f"{lo:10.1f}  {hi:10.1f}  "
+            f"{m_pct:+9.1f}%  {lo_pct:+9.1f}%  {hi_pct:+9.1f}%"
+        )
+
+    print()
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -483,7 +693,8 @@ def main():
         cd = sd[sd["geo"].isin(EU27_COUNTRIES)]["pct_change"].dropna()
         print(
             f"{SECTOR_DISPLAY.get(s, s).replace(chr(10), ' '):<20s} "
-            f"{eu_v:>+7.0f}%  {cd.mean():>+7.0f}%  {cd.min():>+7.0f}%  {cd.max():>+7.0f}%"
+            f"{eu_v:>+7.0f}%  {cd.mean():>+7.0f}%  "
+            f"{cd.min():>+7.0f}%  {cd.max():>+7.0f}%"
         )
 
     # ── Numbers for paper Section: "Uneven progress" (heatmap paragraph) ──
@@ -515,6 +726,10 @@ def main():
         row = eu27_data[eu27_data["sector"] == s]
         if not row.empty:
             print(f"    {s:<16s}: {row['pct_change'].values[0]:+.1f}%")
+
+    # ── 90 % calibrated CI for all sector × country combinations ──────
+    print_calibrated_ci(dataset, population_df)
+
     print("Done!")
 
 
