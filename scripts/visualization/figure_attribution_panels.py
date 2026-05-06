@@ -554,7 +554,9 @@ def create_panel_figure(
         patch.set_alpha(0.85)
         patch.set_linewidth(0.8)
     ax3.set_xticklabels(bp_labels_country, rotation=35, ha="right", fontsize=15)
-    ax3.set_ylabel(f"{PROJECTION_YEAR} projected CO2 (Gt)\n[calibrated 90 % intervals]")
+    ax3.set_ylabel(
+        f"{PROJECTION_YEAR} projected CO2 (Gt)\n[90% model consistency bands]"
+    )
     ax3.yaxis.grid(True, linestyle="-", alpha=0.15, color="#666666", linewidth=0.5)
     ax3.set_axisbelow(True)
 
