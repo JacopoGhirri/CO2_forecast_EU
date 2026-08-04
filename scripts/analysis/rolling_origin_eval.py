@@ -9,6 +9,22 @@ This provides a genuine out-of-sample test of the forecasting pipeline
 across multiple time horizons, complementing the random-split validation
 reported in Table S1.
 
+2024 is a special case: it has no input-feature source data, so it is
+dropped by DatasetUnified's inner join and cannot be looked up the way
+other years are. It is still a valid evaluation target (for cutoff=2021,
+horizon=3), so it is handled the same way as the 2024 anchor in
+scripts/inference/generate_projections.py: observed emissions are read
+directly from the raw CSV and context comes from the projected-context
+dataset, both rescaled using the *cutoff-specific* training scaling
+parameters (see `load_raw_emissions_for_year` and the `target_year == 2024`
+branch in `evaluate_projections`).
+
+Scaling note: observed context/emissions used for comparison are rescaled
+using each cutoff's own `train_dataset.precomputed_scaling_params` rather
+than a single global scaling fit on the full 2010-2023 span. Using a global
+scaling would leak future-year statistics into both the model inputs and
+the residual computation for every cutoff before the last one.
+
 Note: this script re-trains all three models from scratch for each cutoff,
 which is computationally expensive. On a single GPU expect roughly
 [training_time * 4] total runtime. Results are written incrementally so
@@ -402,17 +418,107 @@ def train_forecaster(
 # =============================================================================
 
 
+def load_raw_emissions_for_year(
+    year: int,
+    dataset: DatasetUnified,
+    path_csvs: str = "data/full_timeseries/",
+) -> dict[str, torch.Tensor]:
+    """
+    Loads observed sectoral emissions for `year` directly from the raw CSV
+    and rescales them with `dataset`'s own scaling parameters.
+
+    This bypasses DatasetUnified's inner join, which drops any year missing
+    input-feature source data (as 2024 currently is). `dataset` must be the
+    cutoff-specific training dataset so scaling uses only information
+    available up to the cutoff — mirrors the 2024 anchor logic in
+    scripts/inference/generate_projections.py::load_2024_emissions.
+
+    Returns:
+        Dict mapping country code to a scaled emissions tensor, in the same
+        order as `dataset.emission_columns`. Countries absent from the raw
+        CSV for `year` are omitted.
+    """
+    cfg = output_configs
+    assert cfg["mode"] == "level", f"Only 'level' mode supported, got '{cfg['mode']}'"
+    assert cfg["output"] == "Sectors", (
+        f"Only 'Sectors' output supported, got '{cfg['output']}'"
+    )
+
+    emi_df = pd.read_csv(f"{path_csvs}air_emissions_yearly_full.csv")
+    emi_df_year = emi_df[emi_df["year"] == year].copy()
+    if emi_df_year.empty:
+        raise ValueError(
+            f"No rows with year=={year} in air_emissions_yearly_full.csv"
+        )
+
+    measure = cfg["measure"]
+    emission_type = cfg["emission_type"]
+    grouping = cfg["grouping_structure"]
+
+    records: dict[str, dict[str, float]] = {}
+    for geo, grp in emi_df_year.groupby("geo"):
+        if geo not in EU27_COUNTRIES:
+            continue
+        row_vals: dict[str, float] = {}
+        for sector in EMISSION_SECTORS:
+            total = 0.0
+            for activity in grouping[sector]:
+                col_pattern = (
+                    f"air_emissions_yearly:{emission_type}:{activity}:{measure}"
+                )
+                matching = [c for c in grp.columns if c == col_pattern]
+                if matching:
+                    total += grp[matching].values.sum()
+            row_vals[sector] = total
+        records[geo] = row_vals
+
+    measures = ["THS_T", "KG_HAB"] if cfg["measure"] == "both" else [cfg["measure"]]
+    col_to_raw_sector: dict[str, str] = {}
+    for m in measures:
+        for s in EMISSION_SECTORS:
+            col_name = f"{s}_{m}" if len(measures) > 1 else s
+            col_to_raw_sector[col_name] = s
+
+    scaled: dict[str, torch.Tensor] = {}
+    for geo, row_vals in records.items():
+        tensor_vals: list[float] = []
+        for col in dataset.emission_columns:
+            raw_val = row_vals[col_to_raw_sector[col]]
+            params = dataset.precomputed_scaling_params[col]
+            if dataset.scaling_type == "normalization":
+                scaled_val = (raw_val - params["mean"]) / params["std"]
+            elif dataset.scaling_type == "maxmin":
+                scaled_val = (raw_val - params["min"]) / (params["max"] - params["min"])
+            else:
+                raise ValueError(f"Unknown scaling_type: {dataset.scaling_type}")
+            tensor_vals.append(scaled_val)
+        scaled[geo] = torch.tensor(tensor_vals, dtype=torch.float32)
+
+    missing = set(EU27_COUNTRIES) - set(scaled.keys())
+    if missing:
+        print(f"    [WARNING] no {year} emissions for {sorted(missing)}; skipped.")
+
+    return scaled
+
+
 def evaluate_projections(
     cutoff_year: int,
     full_pred_model: FullPredictionModel,
     full_fcast_model: FullLatentForecastingModel,
     train_dataset: DatasetUnified,
-    full_dataset: DatasetUnified,
+    eval_dataset: DatasetUnified,
+    projection_dataset: DatasetProjections2030,
+    emissions_2024: dict[str, torch.Tensor],
 ) -> list[dict]:
     """
     Autoregressively project emissions from cutoff_year+1 to
-    cutoff_year+MAX_HORIZON and compare against observed values
-    from full_dataset. Returns one row per (country, horizon, sector).
+    cutoff_year+MAX_HORIZON and compare against observed values.
+
+    Observed values for years <= 2023 come from `eval_dataset`, which is
+    scaled with this cutoff's own training statistics (no leakage). 2024 has
+    no input-feature data and is looked up via `emissions_2024` (raw,
+    rescaled the same way) with context from `projection_dataset`.
+    Returns one row per (country, horizon, sector).
     """
     full_pred_model.eval()
     full_fcast_model.eval()
@@ -444,21 +550,38 @@ def evaluate_projections(
             for horizon in range(1, MAX_HORIZON + 1):
                 target_year = cutoff_year + horizon
 
-                # Check observed data exists in the full dataset
-                idx_obs = full_dataset.index_map.get((country, target_year))
-                if idx_obs is None:
-                    continue
+                if target_year == 2024:
+                    # No input-feature data for 2024: fall back to the raw
+                    # observed emissions and projected context, same as the
+                    # 2024 anchor at inference time.
+                    if country not in emissions_2024:
+                        continue
+                    y_obs = emissions_2024[country].unsqueeze(0).to(DEVICE)
+                    c_prev, c_cur = projection_dataset.get_from_keys_shifted(
+                        country, target_year
+                    )
+                    c_cur = c_cur.unsqueeze(0).to(DEVICE)
+                    c_prev = c_prev.unsqueeze(0).to(DEVICE)
+                else:
+                    # Check observed data exists in the eval dataset
+                    idx_obs = eval_dataset.index_map.get((country, target_year))
+                    if idx_obs is None:
+                        continue
 
-                # Context: use observed context from full dataset for eval
-                # (in a real forecast we would use projected context, but
-                # for evaluation we use observed to isolate model error)
-                c_cur = full_dataset.context_df[idx_obs].unsqueeze(0).to(DEVICE)
-                idx_prev_ctx = full_dataset.index_map.get((country, target_year - 1))
-                c_prev = (
-                    full_dataset.context_df[idx_prev_ctx].unsqueeze(0).to(DEVICE)
-                    if idx_prev_ctx is not None
-                    else c_cur
-                )
+                    # Context: use observed context from eval dataset for
+                    # eval (in a real forecast we would use projected
+                    # context, but for evaluation we use observed to isolate
+                    # model error)
+                    c_cur = eval_dataset.context_df[idx_obs].unsqueeze(0).to(DEVICE)
+                    idx_prev_ctx = eval_dataset.index_map.get(
+                        (country, target_year - 1)
+                    )
+                    c_prev = (
+                        eval_dataset.context_df[idx_prev_ctx].unsqueeze(0).to(DEVICE)
+                        if idx_prev_ctx is not None
+                        else c_cur
+                    )
+                    y_obs = eval_dataset.emi_df[idx_obs].unsqueeze(0).to(DEVICE)
 
                 # Forecast latent
                 mean_cur = full_fcast_model.forecaster(
@@ -475,9 +598,6 @@ def evaluate_projections(
                 )
                 delta, _ = full_pred_model.predictor(pred_input)
                 emissions_cur = delta + emissions_prev
-
-                # Observed emissions from full dataset
-                y_obs = full_dataset.emi_df[idx_obs].unsqueeze(0).to(DEVICE)
 
                 # Compute per-sector errors in scaled space
                 residuals = (emissions_cur - y_obs).squeeze(0).cpu().numpy()
@@ -575,18 +695,10 @@ def main():
     with open(VARIABLE_FILE) as f:
         nested_variables = [line.strip() for line in f if line.strip()]
 
-    # Load the full dataset (2010-2023) once — used for observed values
-    print("\nLoading full dataset (2010-2023)...")
-    full_dataset = DatasetUnified(
-        path_csvs="data/full_timeseries/",
-        output_configs=output_configs,
-        select_years=np.arange(DATA_START_YEAR, 2024),
-        select_geo=EU27_COUNTRIES,
-        nested_variables=nested_variables,
-        with_cuda=True,
-        scaling_type="normalization",
-    )
-    print(f"  Full dataset: {len(full_dataset)} samples")
+    # Note: the "observed values" dataset is intentionally *not* built once
+    # here. Its scaling must be re-derived per cutoff (see below) so that
+    # observations are never normalised with statistics from years the
+    # model at that cutoff has not seen.
 
     all_results = []
     results_path = OUTPUT_DIR / "SI_rolling_origin_results.csv"
@@ -615,6 +727,29 @@ def main():
         )
         print(f"  Training dataset: {len(train_dataset)} samples")
 
+        # Build the observed-values dataset for this cutoff, rescaled with
+        # this cutoff's *own* training statistics (train_dataset.
+        # precomputed_scaling_params) rather than a global fit — otherwise
+        # comparisons would leak future-year statistics into both the model
+        # inputs (context) and the residual computation.
+        print("  Building eval dataset (scaled to this cutoff)...")
+        eval_dataset = DatasetUnified(
+            path_csvs="data/full_timeseries/",
+            output_configs=output_configs,
+            select_years=np.arange(DATA_START_YEAR, 2024),
+            select_geo=EU27_COUNTRIES,
+            nested_variables=nested_variables,
+            with_cuda=True,
+            scaling_type="normalization",
+            precomputed_scaling_params=train_dataset.precomputed_scaling_params,
+        )
+
+        # Projected context (used only for the 2024 evaluation point, which
+        # has no observed-context row) and raw observed 2024 emissions,
+        # both scaled with this cutoff's training statistics.
+        projection_dataset = DatasetProjections2030(train_dataset)
+        emissions_2024 = load_raw_emissions_for_year(2024, train_dataset)
+
         # Train all three models
         print("\n  [1/3] Training VAE...")
         vae_model = train_vae(train_dataset, vae_cfg, VAE_EPOCHS)
@@ -636,7 +771,9 @@ def main():
             full_pred_model=full_pred,
             full_fcast_model=full_fcast,
             train_dataset=train_dataset,
-            full_dataset=full_dataset,
+            eval_dataset=eval_dataset,
+            projection_dataset=projection_dataset,
+            emissions_2024=emissions_2024,
         )
         all_results.extend(results)
 
@@ -653,7 +790,8 @@ def main():
             print(f"  Horizon +{h}: RMSE={rmse:.4f}  MAE={mae:.4f}  (n={len(h_df)})")
 
         # Free GPU memory before next cutoff
-        del vae_model, full_pred, full_fcast, train_dataset
+        del vae_model, full_pred, full_fcast, train_dataset, eval_dataset
+        del projection_dataset, emissions_2024
         torch.cuda.empty_cache()
 
     # Build and save summary tables
