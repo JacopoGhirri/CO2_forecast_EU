@@ -35,9 +35,13 @@ CORE_PACKAGES = [
     "pandas>=2.0",
     "pyyaml>=6.0",
     "scipy>=1.10",
+    "scikit-learn>=1.3",
     "matplotlib>=3.7",
-    "seaborn>=0.12",
     "tqdm>=4.65",
+    "requests>=2.31",
+    "Pillow>=10.0",
+    "geopandas>=0.14",
+    "shapely>=2.0",
 ]
 
 # Optional dependencies
@@ -45,6 +49,9 @@ OPTIONAL_PACKAGES = {
     "data_download": ["gdown>=4.7"],
     "sensitivity": ["SALib>=1.4"],
     "excel": ["openpyxl>=3.1"],
+    "interactive": ["streamlit>=1.30"],
+    "umap": ["umap-learn>=0.5"],
+    "emissions_tracking": ["codecarbon>=2.3"],
 }
 
 # Required directories
